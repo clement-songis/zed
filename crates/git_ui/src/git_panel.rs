@@ -572,6 +572,38 @@ enum CommitHistory {
     Error(SharedString),
 }
 
+/// Turns raw commit messages into the list offered for reuse, paired with the
+/// subject lines shown in the picker.
+///
+/// Messages are trimmed and deduplicated: repositories accumulate repeated
+/// messages ("fix tests", "wip"), and offering the same text several times just
+/// makes the list harder to search. Order is preserved, so the most recent
+/// commit stays first.
+fn commit_message_history_entries(
+    raw_messages: impl IntoIterator<Item = SharedString>,
+) -> (Vec<SharedString>, Vec<SharedString>) {
+    let mut messages = Vec::new();
+    let mut subjects = Vec::new();
+    let mut seen = HashSet::default();
+
+    for message in raw_messages {
+        let message = message.trim();
+        if message.is_empty() {
+            continue;
+        }
+        let message = SharedString::from(message.to_string());
+        if !seen.insert(message.clone()) {
+            continue;
+        }
+        subjects.push(SharedString::from(
+            message.lines().next().unwrap_or_default().to_string(),
+        ));
+        messages.push(message);
+    }
+
+    (messages, subjects)
+}
+
 fn commit_history_from_response(
     entries: Rc<[CommitHistoryEntry]>,
     is_loading: bool,
@@ -3483,6 +3515,85 @@ impl GitPanel {
         self.generate_commit_message(cx);
     }
 
+    /// How many recent commits to offer when reusing a past commit message.
+    const COMMIT_MESSAGE_HISTORY_LEN: usize = 50;
+
+    fn commit_message_history(
+        &mut self,
+        _: &git::CommitMessageHistory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(active_repository) = self.active_repository.clone() else {
+            return;
+        };
+        let Some(log_source) = Self::commit_history_log_source(&active_repository, cx) else {
+            // Unborn repository: there is nothing to reuse yet.
+            return;
+        };
+
+        let shas = active_repository.update(cx, |repository, cx| {
+            repository
+                .graph_data(
+                    log_source,
+                    LogOrder::DateOrder,
+                    0..Self::COMMIT_MESSAGE_HISTORY_LEN,
+                    cx,
+                )
+                .commits
+                .iter()
+                .map(|commit| commit.sha)
+                .collect::<Vec<_>>()
+        });
+        if shas.is_empty() {
+            return;
+        }
+
+        let workspace = self.workspace.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let mut raw_messages = Vec::with_capacity(shas.len());
+            for sha in shas {
+                // Await each commit's data, since the picker needs every message
+                // up front to match against.
+                let (loaded, pending) = active_repository.update(cx, |repository, cx| {
+                    match repository.fetch_commit_data(sha, true, cx) {
+                        CommitDataState::Loaded(data) => (Some(data.message.clone()), None),
+                        CommitDataState::Loading(receiver) => (None, receiver.clone()),
+                    }
+                });
+                match (loaded, pending) {
+                    (Some(message), _) => raw_messages.push(message),
+                    (None, Some(receiver)) => {
+                        raw_messages.push(receiver.await.ok()?.message.clone())
+                    }
+                    (None, None) => continue,
+                }
+            }
+
+            let (messages, subjects) = commit_message_history_entries(raw_messages);
+            if messages.is_empty() {
+                return None;
+            }
+
+            let selected = cx
+                .update(|window, cx| {
+                    picker_prompt::prompt("Reuse commit message", subjects, workspace, window, cx)
+                })
+                .ok()?
+                .await?;
+
+            let message = messages.get(selected)?.clone();
+            this.update_in(cx, |this, window, cx| {
+                this.commit_editor.update(cx, |editor, cx| {
+                    editor.set_text(message.to_string(), window, cx);
+                });
+                this.commit_editor.focus_handle(cx).focus(window, cx);
+            })
+            .ok()
+        })
+        .detach();
+    }
+
     fn split_patch(patch: &str) -> Vec<String> {
         let mut result = Vec::new();
         let mut current_patch = String::new();
@@ -5825,6 +5936,12 @@ impl GitPanel {
                                         Label::new("git commit --no-verify").into_any_element()
                                     }),
                             )
+                            .when(has_previous_commit, |this| {
+                                this.separator().action(
+                                    "Reuse Commit Message…",
+                                    Box::new(git::CommitMessageHistory),
+                                )
+                            })
                     }))
                 }
             })
@@ -8520,6 +8637,7 @@ impl Render for GitPanel {
                     .on_action(cx.listener(Self::add_to_git_info_exclude))
                     .on_action(cx.listener(Self::clean_all))
                     .on_action(cx.listener(Self::generate_commit_message_action))
+                    .on_action(cx.listener(Self::commit_message_history))
                     .on_action(cx.listener(Self::stash_all))
                     .on_action(cx.listener(Self::stash_tracked))
                     .on_action(cx.listener(Self::stash_staged))
@@ -9244,6 +9362,43 @@ pub(crate) fn commit_title_exceeds_limit(title: &str, max_length: usize) -> bool
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_commit_message_history_entries() {
+        use super::commit_message_history_entries;
+        use gpui::SharedString;
+
+        let (messages, subjects) = commit_message_history_entries(
+            [
+                "  Fix the parser\n\nIt used to drop the last token.\n",
+                "wip",
+                // Same text as the first entry once trimmed: repositories
+                // accumulate repeats, and the picker should show it once.
+                "Fix the parser\n\nIt used to drop the last token.",
+                "   ",
+                "",
+                "wip",
+            ]
+            .map(SharedString::from),
+        );
+
+        assert_eq!(
+            subjects,
+            vec![
+                SharedString::from("Fix the parser"),
+                SharedString::from("wip")
+            ],
+            "the picker lists each distinct message once, newest first"
+        );
+        assert_eq!(
+            messages,
+            vec![
+                SharedString::from("Fix the parser\n\nIt used to drop the last token."),
+                SharedString::from("wip"),
+            ],
+            "the reused text keeps the body, not just the subject"
+        );
+    }
+
     use editor::SplittableEditor;
     use git::{
         repository::repo_path,
