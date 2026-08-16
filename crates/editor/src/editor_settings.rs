@@ -70,6 +70,7 @@ pub struct EditorSettings {
     pub diff_view_style: DiffViewStyle,
     pub minimum_split_diff_width: f32,
     pub file_diff: FileDiffSettings,
+    pub multi_file_diff: MultiFileDiffSettings,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -77,6 +78,15 @@ pub struct FileDiffSettings {
     /// Whether newly opened file diffs show the full file instead of changes only.
     ///
     /// Default: true
+    pub show_full_file: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MultiFileDiffSettings {
+    /// Whether multi-file diffs show each file in full instead of only the
+    /// changed hunks and their surrounding context.
+    ///
+    /// Default: false
     pub show_full_file: bool,
 }
 #[derive(Debug, Clone)]
@@ -215,6 +225,7 @@ impl Settings for EditorSettings {
         let drag_and_drop_selection = editor.drag_and_drop_selection.unwrap();
         let sticky_scroll = editor.sticky_scroll.unwrap();
         let file_diff = content.git.as_ref().unwrap().file_diff.unwrap();
+        let multi_file_diff = content.git.as_ref().unwrap().multi_file_diff.unwrap();
         Self {
             cursor_blink: editor.cursor_blink.unwrap(),
             cursor_shape: editor.cursor_shape.map(Into::into),
@@ -327,6 +338,9 @@ impl Settings for EditorSettings {
             minimum_split_diff_width: editor.minimum_split_diff_width.unwrap(),
             file_diff: FileDiffSettings {
                 show_full_file: file_diff.show_full_file.unwrap(),
+            },
+            multi_file_diff: MultiFileDiffSettings {
+                show_full_file: multi_file_diff.show_full_file.unwrap(),
             },
         }
     }

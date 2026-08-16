@@ -8146,6 +8146,39 @@ fn version_control_page() -> SettingsPage {
         ]
     }
 
+    fn multi_file_diff_section() -> [SettingsPageItem; 2] {
+        [
+            SettingsPageItem::SectionHeader("Multi-File Diff"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Show Full Files",
+                description: "Whether multi-file diffs show each file in full instead of only the changed hunks. Can be slow for changesets spanning many or large files.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("git.multi_file_diff.show_full_file"),
+                    pick: |settings_content| {
+                        settings_content
+                            .git
+                            .as_ref()?
+                            .multi_file_diff
+                            .as_ref()?
+                            .show_full_file
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .git
+                            .get_or_insert_default()
+                            .multi_file_diff
+                            .get_or_insert_default()
+                            .show_full_file = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+        ]
+    }
+
     SettingsPage {
         title: "Version Control",
         items: concat_sections![
@@ -8155,6 +8188,7 @@ fn version_control_page() -> SettingsPage {
             git_blame_view_section(),
             branch_picker_section(),
             file_diff_section(),
+            multi_file_diff_section(),
             git_hunks_section(),
         ],
     }

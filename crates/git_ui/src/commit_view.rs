@@ -3,7 +3,7 @@ use buffer_diff::BufferDiff;
 use collections::HashMap;
 use editor::{
     Addon, Editor, EditorEvent, EditorSettings, MultiBuffer, RestoreOnlyDiffHunkDelegate,
-    SplittableEditor, hover_markdown_style, multibuffer_context_lines,
+    SplittableEditor, hover_markdown_style,
 };
 use futures_lite::future::yield_now;
 use git::repository::{CommitDetails, RepoPath};
@@ -46,6 +46,7 @@ use workspace::{
 };
 
 use crate::commit_tooltip::CommitAvatar;
+use crate::diff_multibuffer::multi_file_diff_excerpt_ranges;
 use crate::git_panel::GitPanel;
 
 actions!(
@@ -397,26 +398,32 @@ impl CommitView {
                     build_buffer_diff(old_text, &buffer, &language_registry, cx).await?
                 };
 
-                let (excerpt_ranges, path) = cx.update(|_, cx| {
+                let (excerpt_ranges, context_line_count, path) = cx.update(|_, cx| {
                     let snapshot = buffer.read(cx).snapshot();
                     let path = PathKey::with_sort_prefix(
                         FILE_NAMESPACE_SORT_PREFIX,
                         snapshot.file().unwrap().path().clone(),
                     );
-                    let ranges = if is_binary {
-                        vec![language::Point::zero()..snapshot.max_point()]
+                    let (ranges, context_line_count) = if is_binary {
+                        (vec![language::Point::zero()..snapshot.max_point()], 0)
                     } else {
-                        let diff_snapshot = buffer_diff.read(cx).snapshot(cx);
-                        let mut hunks = diff_snapshot.hunks(&snapshot).peekable();
-                        if hunks.peek().is_none() {
-                            vec![language::Point::zero()..snapshot.max_point()]
-                        } else {
-                            hunks
-                                .map(|hunk| hunk.buffer_range.to_point(&snapshot))
-                                .collect::<Vec<_>>()
-                        }
+                        multi_file_diff_excerpt_ranges(
+                            &snapshot,
+                            || {
+                                let diff_snapshot = buffer_diff.read(cx).snapshot(cx);
+                                let mut hunks = diff_snapshot.hunks(&snapshot).peekable();
+                                if hunks.peek().is_none() {
+                                    vec![language::Point::zero()..snapshot.max_point()]
+                                } else {
+                                    hunks
+                                        .map(|hunk| hunk.buffer_range.to_point(&snapshot))
+                                        .collect::<Vec<_>>()
+                                }
+                            },
+                            cx,
+                        )
                     };
-                    (ranges, path)
+                    (ranges, context_line_count, path)
                 })?;
 
                 // Batch the insertion of excerpts and yield between batches, to avoid blocking the main thread when a single file has many hunks.
@@ -433,7 +440,7 @@ impl CommitView {
                                 path.clone(),
                                 buffer.clone(),
                                 ranges,
-                                multibuffer_context_lines(cx),
+                                context_line_count,
                                 buffer_diff.clone(),
                                 cx,
                             );

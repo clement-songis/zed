@@ -26,7 +26,7 @@ use project::{
     },
 };
 use settings::{GitPanelGroupBy, GitPanelSortBy, Settings, SettingsStore};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, ops::Range, sync::Arc};
 use theme::ActiveTheme;
 use ui::{CommonAnimationExt as _, KeyBinding, prelude::*};
 use util::{ResultExt as _, rel_path::RelPath};
@@ -35,6 +35,31 @@ use workspace::{
     item::{Item, SaveOptions},
 };
 use ztracing::instrument;
+
+/// Resolves the excerpt ranges and surrounding context lines for one file of a
+/// multi-file diff, honoring `git.multi_file_diff.show_full_file`.
+///
+/// `changed_ranges` is only invoked in the default hunks-only mode, so callers
+/// don't pay for collecting hunks when the whole buffer is used anyway.
+pub(crate) fn multi_file_diff_excerpt_ranges(
+    snapshot: &language::BufferSnapshot,
+    changed_ranges: impl FnOnce() -> Vec<Range<language::Point>>,
+    cx: &App,
+) -> (Vec<Range<language::Point>>, u32) {
+    if EditorSettings::get_global(cx)
+        .multi_file_diff
+        .show_full_file
+    {
+        (
+            vec![language::Point::zero()..snapshot.max_point()],
+            // The excerpt already spans the buffer; padding it further would push
+            // the range past the end of the file.
+            0,
+        )
+    } else {
+        (changed_ranges(), multibuffer_context_lines(cx))
+    }
+}
 
 struct BufferSubscriptions {
     _diff: Entity<BufferDiff>,
@@ -126,16 +151,26 @@ impl DiffMultibuffer {
         let mut was_tree_view = GitPanelSettings::get_global(cx).tree_view;
         let mut was_collapse_untracked_diff =
             GitPanelSettings::get_global(cx).collapse_untracked_diff;
+        let mut was_show_full_file = EditorSettings::get_global(cx)
+            .multi_file_diff
+            .show_full_file;
         cx.observe_global_in::<SettingsStore>(window, move |this, window, cx| {
             let settings = GitPanelSettings::get_global(cx);
             let sort_by = settings.sort_by;
             let group_by = settings.group_by;
             let tree_view = settings.tree_view;
             let is_collapse_untracked_diff = settings.collapse_untracked_diff;
+            let show_full_file = EditorSettings::get_global(cx)
+                .multi_file_diff
+                .show_full_file;
+            if show_full_file != was_show_full_file {
+                this.clear_excerpts(cx);
+            }
             if sort_by != was_sort_by
                 || group_by != was_group_by
                 || tree_view != was_tree_view
                 || is_collapse_untracked_diff != was_collapse_untracked_diff
+                || show_full_file != was_show_full_file
             {
                 this._task = {
                     window.spawn(cx, {
@@ -148,6 +183,7 @@ impl DiffMultibuffer {
             was_group_by = group_by;
             was_tree_view = tree_view;
             was_collapse_untracked_diff = is_collapse_untracked_diff;
+            was_show_full_file = show_full_file;
         })
         .detach();
 
@@ -503,25 +539,29 @@ impl DiffMultibuffer {
         let snapshot = display_buffer.read(cx).snapshot();
         let diff_snapshot = diff.read(cx).snapshot(cx);
 
-        let excerpt_ranges = {
-            let diff_hunk_ranges = diff_snapshot
-                .hunks_intersecting_range(
-                    Anchor::min_max_range_for_buffer(snapshot.remote_id()),
-                    &snapshot,
-                )
-                .map(|diff_hunk| diff_hunk.buffer_range.to_point(&snapshot));
-            let conflict_ranges = conflict_set.as_ref().and_then(|conflict_set| {
-                let conflicts = conflict_set.read(cx).snapshot();
-                let conflicts = conflicts
-                    .conflicts
-                    .iter()
-                    .map(|conflict| conflict.range.to_point(&snapshot))
-                    .collect::<Vec<_>>();
-                (!conflicts.is_empty()).then_some(conflicts)
-            });
+        let (excerpt_ranges, context_line_count) = multi_file_diff_excerpt_ranges(
+            &snapshot,
+            || {
+                let diff_hunk_ranges = diff_snapshot
+                    .hunks_intersecting_range(
+                        Anchor::min_max_range_for_buffer(snapshot.remote_id()),
+                        &snapshot,
+                    )
+                    .map(|diff_hunk| diff_hunk.buffer_range.to_point(&snapshot));
+                let conflict_ranges = conflict_set.as_ref().and_then(|conflict_set| {
+                    let conflicts = conflict_set.read(cx).snapshot();
+                    let conflicts = conflicts
+                        .conflicts
+                        .iter()
+                        .map(|conflict| conflict.range.to_point(&snapshot))
+                        .collect::<Vec<_>>();
+                    (!conflicts.is_empty()).then_some(conflicts)
+                });
 
-            conflict_ranges.unwrap_or_else(|| diff_hunk_ranges.collect())
-        };
+                conflict_ranges.unwrap_or_else(|| diff_hunk_ranges.collect())
+            },
+            cx,
+        );
 
         let buffer_id = snapshot.text.remote_id();
         let mut needs_fold = false;
@@ -532,7 +572,7 @@ impl DiffMultibuffer {
                 path_key.clone(),
                 display_buffer,
                 excerpt_ranges,
-                multibuffer_context_lines(cx),
+                context_line_count,
                 diff,
                 cx,
             );
@@ -617,6 +657,29 @@ impl DiffMultibuffer {
     }
 
     #[instrument(skip(this, cx))]
+    /// Drops every excerpt so that the next [`Self::refresh`] rebuilds them from
+    /// scratch.
+    ///
+    /// [`MultiBuffer::update_excerpts_for_path`] merges the ranges it is given with
+    /// the excerpts already present for that path, so excerpts can only ever grow.
+    /// Narrowing them — as happens when `git.multi_file_diff.show_full_file` is
+    /// turned back off — requires removing the wider ones first.
+    fn clear_excerpts(&mut self, cx: &mut Context<Self>) {
+        let paths = self
+            .multibuffer
+            .read(cx)
+            .snapshot(cx)
+            .buffers_with_paths()
+            .map(|(_, path_key)| path_key.clone())
+            .collect::<Vec<_>>();
+        self.editor.update(cx, |editor, cx| {
+            for path in paths {
+                editor.remove_excerpts_for_path(path, cx);
+            }
+        });
+        self.buffer_subscriptions.clear();
+    }
+
     pub(crate) async fn refresh(this: WeakEntity<Self>, cx: &mut AsyncWindowContext) -> Result<()> {
         let entries = this.update(cx, |this, cx| {
             let (repo, buffers_to_load) = this.branch_diff.update(cx, |branch_diff, cx| {

@@ -562,6 +562,8 @@ pub struct GitSettings {
     pub branch_picker: Option<BranchPickerSettingsContent>,
     /// File diff settings.
     pub file_diff: Option<FileDiffSettingsContent>,
+    /// Multi-file diff settings.
+    pub multi_file_diff: Option<MultiFileDiffSettingsContent>,
     /// How hunks are displayed visually in the editor.
     ///
     /// Default: staged_hollow
@@ -724,6 +726,21 @@ pub struct FileDiffSettingsContent {
     /// Whether newly opened file diffs show the full file instead of changes only.
     ///
     /// Default: true
+    pub show_full_file: Option<bool>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize, JsonSchema, MergeFrom)]
+#[serde(rename_all = "snake_case")]
+pub struct MultiFileDiffSettingsContent {
+    /// Whether multi-file diffs (project diff, branch diff, staged and unstaged
+    /// changes, and commit views) show each file in full instead of only the
+    /// changed hunks and their surrounding context.
+    ///
+    /// Enabling this loads every changed file in its entirety, which can be slow
+    /// for changesets that span many or large files.
+    ///
+    /// Default: false
     pub show_full_file: Option<bool>,
 }
 

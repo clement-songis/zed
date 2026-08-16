@@ -67,6 +67,24 @@ All of the changes displayed in the Project Diff behave exactly the same as any 
 
 You can stage or unstage each hunk as well as a whole file by hitting the buttons on the tab bar or their corresponding keybindings.
 
+### Showing Full Files
+
+By default, multi-file diffs show only the changed hunks plus a few lines of surrounding context. To show each file in its entirety instead, add this to your `settings.json`:
+
+```json
+{
+  "git": {
+    "multi_file_diff": {
+      "show_full_file": true
+    }
+  }
+}
+```
+
+This applies to the Project Diff, branch diffs, the staged and unstaged changes views, and commit views. Because it loads every changed file in full, it can be slow for changesets that span many or large files.
+
+Single-file diffs are controlled separately by `git.file_diff.show_full_file`, which is enabled by default.
+
 ### Word Diff Highlighting
 
 By default, Zed highlights changed words within modified lines to make it easier to spot exactly what changed. To disable this globally, open the Settings Editor and go to **Languages & Tools > Miscellaneous**, then turn off **Word Diff Enabled**.

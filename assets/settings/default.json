@@ -1725,6 +1725,15 @@
       // Whether newly opened file diffs show the full file instead of changes only.
       "show_full_file": true,
     },
+    "multi_file_diff": {
+      // Whether multi-file diffs (project diff, branch diff, staged and unstaged
+      // changes, and commit views) show each file in full instead of only the
+      // changed hunks and their surrounding context.
+      //
+      // Enabling this loads every changed file in its entirety, which can be slow
+      // for changesets that span many or large files.
+      "show_full_file": false,
+    },
     // How git hunks are displayed visually in the editor.
     // This setting can take two values:
     //

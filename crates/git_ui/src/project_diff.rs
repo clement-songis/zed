@@ -1268,6 +1268,111 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_multi_file_diff_show_full_file_setting(cx: &mut TestAppContext) {
+        // A single changed line in the middle of a file long enough that the
+        // hunks-only excerpt (the hunk plus `excerpt_context_lines` on each side)
+        // is strictly smaller than the whole file.
+        const LINE_COUNT: usize = 40;
+        const CHANGED_LINE: usize = 20;
+        let working = (1..=LINE_COUNT)
+            .map(|line| format!("line{line:02}\n"))
+            .collect::<String>();
+        let head = (1..=LINE_COUNT)
+            .map(|line| {
+                if line == CHANGED_LINE {
+                    format!("LINE{line:02}\n")
+                } else {
+                    format!("line{line:02}\n")
+                }
+            })
+            .collect::<String>();
+        // Far enough from the change to be excluded by the default context.
+        let outside_context = ["line01", "line10", "line30", "line40"];
+
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "numbers.txt": working.clone(),
+            }),
+        )
+        .await;
+        fs.set_head_and_index_for_repo(
+            Path::new(path!("/project/.git")),
+            &[("numbers.txt", head.clone())],
+        );
+
+        let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        cx.focus(&workspace);
+        cx.update(|window, cx| {
+            window.dispatch_action(project_diff::Diff.boxed_clone(), cx);
+        });
+        cx.run_until_parked();
+
+        let item = workspace.update(cx, |workspace, cx| {
+            workspace.active_item_as::<ProjectDiff>(cx).unwrap()
+        });
+        let editor = item.read_with(cx, |item, cx| item.editor(cx).read(cx).rhs_editor().clone());
+        let mut cx = EditorTestContext::for_editor_in(editor, cx).await;
+
+        let set_show_full_file = |show_full_file: bool, cx: &mut EditorTestContext| {
+            cx.update(|_window, cx| {
+                cx.update_global::<SettingsStore, _>(|store, cx| {
+                    store.update_user_settings(cx, |settings| {
+                        settings
+                            .git
+                            .get_or_insert_default()
+                            .multi_file_diff
+                            .get_or_insert_default()
+                            .show_full_file = Some(show_full_file);
+                    });
+                });
+            });
+            cx.run_until_parked();
+            cx.buffer_text()
+        };
+
+        let assert_hunks_only = |stage: &str, excerpts: &str| {
+            assert!(
+                excerpts.contains("line20"),
+                "[{stage}] expected the changed line in the excerpt, got:\n{excerpts}"
+            );
+            for line in outside_context {
+                assert!(
+                    !excerpts.contains(line),
+                    "[{stage}] expected {line:?} outside the hunks-only excerpt, got:\n{excerpts}"
+                );
+            }
+        };
+        let assert_full_file = |excerpts: &str| {
+            for line in outside_context.iter().chain(["line20"].iter()) {
+                assert!(
+                    excerpts.contains(line),
+                    "expected {line:?} in the full-file excerpt, got:\n{excerpts}"
+                );
+            }
+        };
+
+        // Disabled (the default): only the changed hunk and its context lines.
+        assert_hunks_only("default", &cx.buffer_text());
+
+        // Enabling it re-expands the already-open diff to the whole file.
+        assert_full_file(&set_show_full_file(true, &mut cx));
+
+        // Disabling it collapses back to hunks only.
+        assert_hunks_only("toggled back off", &set_show_full_file(false, &mut cx));
+    }
+
+    #[gpui::test]
     async fn test_deploy_at_respects_active_repository_selection(cx: &mut TestAppContext) {
         init_test(cx);
 
