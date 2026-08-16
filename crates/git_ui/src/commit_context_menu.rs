@@ -16,6 +16,8 @@ actions!(
         CopyCommitTag,
         /// Opens the commit view for the selected commit.
         OpenCommitView,
+        /// Creates a new branch starting at the selected commit.
+        CreateBranchFromCommit,
     ]
 );
 
@@ -77,6 +79,34 @@ pub(crate) fn commit_context_menu(
                     );
                 }
             })
+            .entry(
+                "New Branch from Here",
+                Some(CreateBranchFromCommit.boxed_clone()),
+                {
+                    let repository = repository.clone();
+                    let workspace = workspace.clone();
+                    // Prefer the ref name so the modal reads "New Branch from main"
+                    // rather than showing a SHA the user did not pick.
+                    let base = ref_name
+                        .clone()
+                        .unwrap_or_else(|| SharedString::from(sha.to_string()));
+                    move |window, cx| {
+                        let Some(repository) = repository
+                            .as_ref()
+                            .and_then(|repository| repository.upgrade())
+                        else {
+                            return;
+                        };
+                        crate::create_branch_from_commit(
+                            base.clone(),
+                            repository,
+                            workspace.clone(),
+                            window,
+                            cx,
+                        );
+                    }
+                },
+            )
             .entry(
                 "Copy SHA",
                 Some(CopyCommitSha.boxed_clone()),

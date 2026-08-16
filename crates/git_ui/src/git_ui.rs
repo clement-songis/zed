@@ -20,6 +20,7 @@ use project::git_store::Repository;
 use project_diff::ProjectDiff;
 use time::OffsetDateTime;
 use ui::{ButtonLike, ContextMenu, ElevationIndex, PopoverMenuHandle, TintColor, prelude::*};
+use util::ResultExt as _;
 use workspace::{
     ModalView, OpenMode, Workspace,
     notifications::{DetachAndPromptErr, NotifyTaskExt},
@@ -553,6 +554,115 @@ fn rename_current_branch(
     workspace.toggle_modal(window, cx, |window, cx| {
         RenameBranchModal::new(current_branch_name, repo, window, cx)
     });
+}
+
+struct CreateBranchFromCommitModal {
+    base: SharedString,
+    editor: Entity<Editor>,
+    repo: Entity<Repository>,
+}
+
+impl CreateBranchFromCommitModal {
+    fn new(
+        base: SharedString,
+        repo: Entity<Repository>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("Branch name…", window, cx);
+            editor
+        });
+        Self { base, editor, repo }
+    }
+
+    fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(DismissEvent);
+    }
+
+    fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        let name = branch_picker::normalize_branch_name(&self.editor.read(cx).text(cx));
+        if name.is_empty() {
+            // Leave the modal open rather than silently doing nothing.
+            return;
+        }
+
+        let repo = self.repo.clone();
+        let base = self.base.to_string();
+        cx.spawn(async move |_, cx| {
+            match repo
+                .update(cx, |repo, _| repo.create_branch(name, Some(base)))
+                .await
+            {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err(anyhow!("Operation was canceled")),
+            }
+        })
+        .detach_and_prompt_err("Failed to create branch", window, cx, |e, _, _| {
+            Some(e.to_string())
+        });
+        cx.emit(DismissEvent);
+    }
+}
+
+impl EventEmitter<DismissEvent> for CreateBranchFromCommitModal {}
+impl ModalView for CreateBranchFromCommitModal {}
+impl Focusable for CreateBranchFromCommitModal {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.editor.focus_handle(cx)
+    }
+}
+
+impl Render for CreateBranchFromCommitModal {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .key_context("CreateBranchFromCommitModal")
+            .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::confirm))
+            .elevation_2(cx)
+            .w(rems(34.))
+            .child(
+                h_flex()
+                    .px_3()
+                    .pt_2()
+                    .pb_1()
+                    .w_full()
+                    .gap_1p5()
+                    .child(Icon::new(IconName::GitBranch).size(IconSize::XSmall))
+                    .child(
+                        Headline::new(format!("New Branch from {}", self.base))
+                            .size(HeadlineSize::XSmall),
+                    ),
+            )
+            .child(div().px_3().pb_1().w_full().child(self.editor.clone()))
+            .child(
+                div().px_3().pb_3().w_full().child(
+                    Label::new("The new branch will be checked out.")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                ),
+            )
+    }
+}
+
+/// Opens a modal to create a branch starting at `base`, which may be any
+/// committish (a SHA, tag, or branch name).
+pub(crate) fn create_branch_from_commit(
+    base: SharedString,
+    repo: Entity<Repository>,
+    workspace: WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.toggle_modal(window, cx, |window, cx| {
+                CreateBranchFromCommitModal::new(base, repo, window, cx)
+            });
+        })
+        .log_err();
 }
 
 fn copy_branch_name(workspace: &mut Workspace, cx: &mut Context<Workspace>) {

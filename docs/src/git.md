@@ -187,6 +187,12 @@ Create a new branch using {#action git::Branch} or switch to an existing branch 
 
 When you are working in a [Git worktree](#git-worktrees), use the branch picker after switching to the worktree to create or check out the branch you want to use there.
 
+### Creating a Branch from a Commit
+
+To start a branch at an earlier point in history, right-click a commit in the Git Graph or in the Git Panel's History tab and choose **New Branch from Here**, or use {#action git_graph::CreateBranchFromCommit} on the commit selected in the Git Graph.
+
+Enter a name and the branch is created at that commit and checked out.
+
 ### Deleting Branches
 
 To delete a branch, open the branch switcher with {#action git::Switch}, find the branch you want to delete, and use the delete option. Zed will confirm before deleting to prevent accidental data loss.
