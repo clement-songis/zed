@@ -69,6 +69,7 @@ pub struct FakeGitRepositoryState {
     pub blames_at_revision: HashMap<(RepoPath, Oid), Blame>,
     pub current_branch_name: Option<String>,
     pub branches: HashSet<String>,
+    pub tags: HashSet<String>,
     /// List of remotes, keys are names and values are URLs
     pub remotes: HashMap<String, String>,
     pub simulated_index_write_error_message: Option<String>,
@@ -94,6 +95,7 @@ impl FakeGitRepositoryState {
             blames_at_revision: Default::default(),
             current_branch_name: Default::default(),
             branches: Default::default(),
+            tags: Default::default(),
             simulated_index_write_error_message: Default::default(),
             simulated_create_worktree_error: Default::default(),
             simulated_graph_error: None,
@@ -945,6 +947,21 @@ impl GitRepository for FakeGitRepository {
                 state.remotes.insert(remote.to_owned(), "".to_owned());
             }
             state.branches.insert(name);
+            Ok(())
+        })
+    }
+
+    fn create_tag(
+        &self,
+        name: String,
+        _commit: Option<String>,
+        _message: Option<String>,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            if !state.tags.insert(name.clone()) {
+                bail!("tag '{name}' already exists");
+            }
             Ok(())
         })
     }

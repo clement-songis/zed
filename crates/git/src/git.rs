@@ -139,6 +139,8 @@ actions!(
         AddToGitInfoExclude,
         /// Copies the current branch name to the clipboard.
         CopyBranchName,
+        /// Moves focus between the fields of the new-tag modal.
+        FocusTagMessage,
     ]
 );
 

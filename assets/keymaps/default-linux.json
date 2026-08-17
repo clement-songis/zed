@@ -1014,6 +1014,13 @@
     },
   },
   {
+    "context": "CreateTagModal",
+    "bindings": {
+      "tab": "git::FocusTagMessage",
+      "shift-tab": "git::FocusTagMessage",
+    },
+  },
+  {
     "context": "GitPanel",
     "bindings": {
       "ctrl-1": "git_panel::ActivateChangesTab",

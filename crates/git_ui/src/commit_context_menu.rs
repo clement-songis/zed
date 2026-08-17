@@ -16,6 +16,8 @@ actions!(
         CopyCommitTag,
         /// Opens the commit view for the selected commit.
         OpenCommitView,
+        /// Creates a tag at the selected commit.
+        CreateTag,
     ]
 );
 
@@ -72,6 +74,25 @@ pub(crate) fn commit_context_menu(
                         workspace.clone(),
                         None,
                         None,
+                        window,
+                        cx,
+                    );
+                }
+            })
+            .entry("New Tag…", Some(CreateTag.boxed_clone()), {
+                let repository = repository.clone();
+                let workspace = workspace.clone();
+                move |window, cx| {
+                    let Some(repository) = repository
+                        .as_ref()
+                        .and_then(|repository| repository.upgrade())
+                    else {
+                        return;
+                    };
+                    crate::create_tag_at_commit(
+                        SharedString::from(sha.to_string()),
+                        repository,
+                        workspace.clone(),
                         window,
                         cx,
                     );

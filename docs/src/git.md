@@ -193,6 +193,14 @@ To delete a branch, open the branch switcher with {#action git::Switch}, find th
 
 > **Note:** You cannot delete the branch you currently have checked out. Switch to a different branch first.
 
+## Tags
+
+To tag a commit, right-click it in the Git Graph or in the Git Panel's History tab and choose **New Tag…**, or use {#action git_graph::CreateTag} on the commit selected in the Git Graph.
+
+Enter a name, and optionally a message. With a message, Zed creates an annotated tag, which records who made it and when; without one, it creates a lightweight tag that simply points at the commit. Use {#kb git::FocusTagMessage} to move between the two fields.
+
+Creating a tag whose name already exists fails rather than moving the existing tag.
+
 ## Git Worktrees
 
 Git worktrees let you keep multiple checkouts of the same repository on disk at the same time.

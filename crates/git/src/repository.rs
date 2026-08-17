@@ -818,6 +818,18 @@ pub trait GitRepository: Send + Sync {
     -> BoxFuture<'_, Result<()>>;
     fn rename_branch(&self, branch: String, new_name: String) -> BoxFuture<'_, Result<()>>;
 
+    /// Creates a tag at `commit`, or at `HEAD` when it is `None`.
+    ///
+    /// Passing a `message` creates an annotated tag; otherwise the tag is
+    /// lightweight. `env` supplies the tagger identity for annotated tags.
+    fn create_tag(
+        &self,
+        name: String,
+        commit: Option<String>,
+        message: Option<String>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>>;
+
     fn delete_branch(
         &self,
         is_remote: bool,
@@ -2366,6 +2378,47 @@ impl GitRepository for RealGitRepository {
                 git_binary
                     .run(&["branch", "-m", &branch, &new_name])
                     .await?;
+                anyhow::Ok(())
+            })
+            .boxed()
+    }
+
+    fn create_tag(
+        &self,
+        name: String,
+        commit: Option<String>,
+        message: Option<String>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary_in_worktree();
+
+        self.executor
+            .spawn(async move {
+                let git_binary = git_binary?;
+                let mut args = vec![OsString::from("tag")];
+                // A message makes it an annotated tag, which records a tagger and
+                // needs the commit environment; without one git creates a
+                // lightweight tag that just points at the commit.
+                if let Some(message) = message.as_ref() {
+                    args.push("--annotate".into());
+                    args.push("--message".into());
+                    args.push(message.into());
+                }
+                args.push((&name).into());
+                if let Some(commit) = commit.as_ref() {
+                    args.push(commit.into());
+                }
+
+                let output = git_binary
+                    .build_command(&args)
+                    .envs(env.iter())
+                    .output()
+                    .await?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "Failed to create tag:\n{}",
+                    String::from_utf8_lossy(&output.stderr),
+                );
                 anyhow::Ok(())
             })
             .boxed()
@@ -4758,6 +4811,91 @@ mod tests {
                 .await
                 .unwrap(),
             "true"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_create_tag_lightweight_and_annotated(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("file.txt"), "first").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "first"]);
+        let first_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
+
+        fs::write(repo_directory.join("file.txt"), "second").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "second"]);
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+        let env = Arc::new(test_commit_envs());
+
+        // Lightweight: no message, and pointing at an older commit rather than HEAD.
+        repository
+            .create_tag(
+                "v1.0.0".to_string(),
+                Some(first_sha.clone()),
+                None,
+                env.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            git_command_output(&repo_directory, ["rev-parse", "v1.0.0^{commit}"]),
+            first_sha,
+            "the tag should point at the requested commit, not at HEAD"
+        );
+        assert_eq!(
+            git_command_output(&repo_directory, ["cat-file", "-t", "v1.0.0"]),
+            "commit",
+            "without a message the tag should be lightweight"
+        );
+
+        // Annotated: a message turns it into a tag object carrying that message.
+        repository
+            .create_tag(
+                "v2.0.0".to_string(),
+                None,
+                Some("Release 2.0.0".to_string()),
+                env,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            git_command_output(&repo_directory, ["cat-file", "-t", "v2.0.0"]),
+            "tag",
+            "a message should produce an annotated tag object"
+        );
+        assert!(
+            git_command_output(
+                &repo_directory,
+                ["tag", "-l", "--format=%(contents)", "v2.0.0"]
+            )
+            .contains("Release 2.0.0")
+        );
+
+        // Reusing an existing name must fail rather than silently move the tag.
+        assert!(
+            repository
+                .create_tag(
+                    "v1.0.0".to_string(),
+                    None,
+                    None,
+                    Arc::new(test_commit_envs())
+                )
+                .await
+                .is_err()
         );
     }
 
