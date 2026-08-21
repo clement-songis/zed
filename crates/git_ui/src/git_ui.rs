@@ -11,6 +11,7 @@ use git::{
     repository::{Branch, CommitDetails, Upstream, UpstreamTracking, UpstreamTrackingStatus},
     status::{FileStatus, StatusCode, UnmergedStatus, UnmergedStatusCode},
 };
+use gpui::PromptLevel;
 use gpui::{
     App, ClipboardItem, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
@@ -553,6 +554,47 @@ fn rename_current_branch(
     workspace.toggle_modal(window, cx, |window, cx| {
         RenameBranchModal::new(current_branch_name, repo, window, cx)
     });
+}
+
+/// Deletes a local tag, after confirming.
+///
+/// A deleted tag is only recoverable by someone who still knows the commit it
+/// pointed at, so this always confirms rather than offering an undo.
+pub(crate) fn delete_tag(
+    tag_name: SharedString,
+    repository: Option<WeakEntity<Repository>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(repository) = repository.and_then(|repository| repository.upgrade()) else {
+        return;
+    };
+    let prompt = window.prompt(
+        PromptLevel::Warning,
+        &format!("Delete tag {tag_name}?"),
+        None,
+        &["Delete", "Cancel"],
+        cx,
+    );
+    window
+        .spawn(cx, async move |cx| {
+            if prompt.await.ok() != Some(0) {
+                return;
+            }
+            let deleted = cx
+                .update(|_, cx| {
+                    repository.update(cx, |repository, _| {
+                        repository.delete_tag(tag_name.to_string())
+                    })
+                })
+                .ok();
+            if let Some(deleted) = deleted
+                && let Ok(Err(error)) = deleted.await
+            {
+                log::error!("failed to delete tag: {error:#}");
+            }
+        })
+        .detach();
 }
 
 fn copy_branch_name(workspace: &mut Workspace, cx: &mut Context<Workspace>) {

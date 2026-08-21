@@ -129,6 +129,39 @@ pub(crate) fn commit_context_menu(
                     }
                 })
             })
+            .when(ref_name.is_none() && !commit.tag_names.is_empty(), |menu| {
+                menu.map(|menu| {
+                    let tag_names = commit.tag_names.clone();
+                    let repository = repository.clone();
+                    let delete_tag_label = "Delete Tag";
+
+                    match tag_names.as_slice() {
+                        [tag_name] => {
+                            let tag_name = tag_name.clone();
+                            let label = format!("{delete_tag_label}: {tag_name}");
+                            menu.entry(label, None, move |window, cx| {
+                                crate::delete_tag(tag_name.clone(), repository.clone(), window, cx);
+                            })
+                        }
+                        _ => menu.submenu(delete_tag_label, move |menu, _window, _cx| {
+                            let mut menu = menu.fixed_width(COMMIT_TAG_LIST_WIDTH_IN_REMS.into());
+
+                            for tag_name in tag_names.clone() {
+                                let repository = repository.clone();
+                                menu = menu.entry(tag_name.clone(), None, move |window, cx| {
+                                    crate::delete_tag(
+                                        tag_name.clone(),
+                                        repository.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            }
+                            menu
+                        }),
+                    }
+                })
+            })
             .when(source == CommitContextMenuSource::GitPanel, |menu| {
                 menu.entry("Show in Git Graph", None, move |window, cx| {
                     window.dispatch_action(

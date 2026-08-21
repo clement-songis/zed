@@ -193,6 +193,14 @@ To delete a branch, open the branch switcher with {#action git::Switch}, find th
 
 > **Note:** You cannot delete the branch you currently have checked out. Switch to a different branch first.
 
+## Tags
+
+To delete a tag, right-click the commit it points at in the Git Graph or in the Git Panel's History tab and choose **Delete Tag**. When the commit carries several tags, they are listed in a submenu.
+
+Zed confirms first: a deleted tag can only be recovered by someone who still knows the commit it pointed at.
+
+This deletes the local tag only; a tag already pushed to a remote stays there.
+
 ## Git Worktrees
 
 Git worktrees let you keep multiple checkouts of the same repository on disk at the same time.
