@@ -240,6 +240,15 @@ A merge that stops on conflicts is not treated as a failure: the [operation bann
 
 As with merging, a rebase that stops on conflicts hands over to the [operation banner](#operations-in-progress), which offers to continue once each conflict is resolved, to skip the commit that stopped, or to abort.
 
+## Cherry-Picking and Reverting
+
+Right-click a commit in the Git Graph or the Git Panel's History tab:
+
+- **Cherry-Pick** applies it on top of the current branch. Zed passes `-x`, so the new commit's message records which commit it came from — the convention when moving work between shared branches.
+- **Revert** creates a commit undoing it, leaving the original in place.
+
+Either can stop on conflicts, in which case the [operation banner](#operations-in-progress) takes over.
+
 ## Operations in Progress
 
 When the repository is in the middle of a multi-step operation — a merge, a rebase, a cherry-pick, a revert, or a bisect — the Git Panel shows a banner naming it, with the current step and the branch being returned to when git records them.

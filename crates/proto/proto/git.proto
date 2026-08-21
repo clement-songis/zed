@@ -207,6 +207,28 @@ message GitCreateBranch {
   optional string base_branch = 5;
 }
 
+message GitCherryPick {
+  uint64 project_id = 1;
+  uint64 repository_id = 2;
+  repeated string commits = 3;
+  bool record_origin = 4;
+}
+
+message GitRevert {
+  uint64 project_id = 1;
+  uint64 repository_id = 2;
+  repeated string commits = 3;
+  optional uint32 mainline = 4;
+}
+
+message GitCherryPickResponse {
+  bool conflicted = 1;
+}
+
+message GitRevertResponse {
+  bool conflicted = 1;
+}
+
 message GitRebase {
   uint64 project_id = 1;
   uint64 repository_id = 2;
