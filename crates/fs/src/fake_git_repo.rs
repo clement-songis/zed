@@ -949,6 +949,17 @@ impl GitRepository for FakeGitRepository {
         })
     }
 
+    fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            if !state.tags.contains(&name) {
+                bail!("tag '{name}' not found");
+            }
+            // A detached HEAD has no branch name.
+            state.current_branch_name = None;
+            Ok(())
+        })
+    }
+
     fn rename_branch(&self, branch: String, new_name: String) -> BoxFuture<'_, Result<()>> {
         self.with_state_async(true, move |state| {
             if !state.branches.remove(&branch) {

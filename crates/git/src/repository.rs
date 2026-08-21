@@ -818,6 +818,9 @@ pub trait GitRepository: Send + Sync {
     -> BoxFuture<'_, Result<()>>;
     fn rename_branch(&self, branch: String, new_name: String) -> BoxFuture<'_, Result<()>>;
 
+    /// Checks out a tag, leaving HEAD detached at the commit it points to.
+    fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>>;
+
     fn delete_branch(
         &self,
         is_remote: bool,
@@ -2366,6 +2369,30 @@ impl GitRepository for RealGitRepository {
                 git_binary
                     .run(&["branch", "-m", &branch, &new_name])
                     .await?;
+                anyhow::Ok(())
+            })
+            .boxed()
+    }
+
+    fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary_in_worktree();
+
+        self.executor
+            .spawn(async move {
+                let git_binary = git_binary?;
+                // `refs/tags/` disambiguates: a branch and a tag may share a
+                // name, and a bare name would resolve to the branch. `--detach`
+                // makes the resulting state explicit rather than implied.
+                let tag_ref = format!("refs/tags/{name}");
+                let output = git_binary
+                    .build_command(&["checkout", "--detach", &tag_ref])
+                    .output()
+                    .await?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "Failed to check out tag:\n{}",
+                    String::from_utf8_lossy(&output.stderr),
+                );
                 anyhow::Ok(())
             })
             .boxed()
@@ -4762,6 +4789,65 @@ mod tests {
     }
 
     #[gpui::test]
+    #[gpui::test]
+    async fn test_checkout_tag_detaches_and_disambiguates(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("file.txt"), "first").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "first"]);
+        let tagged_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
+        git_command(&repo_directory, ["tag", "release"]);
+
+        // A branch with the same name as the tag, pointing somewhere else: a bare
+        // `git checkout release` would land on the branch, not the tag.
+        git_command(&repo_directory, ["branch", "release"]);
+        fs::write(repo_directory.join("file.txt"), "second").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "second"]);
+        git_command(&repo_directory, ["branch", "-f", "release", "HEAD"]);
+        // Explicit ref: a bare `rev-parse release` is itself ambiguous and
+        // resolves to the tag, which is the very confusion under test.
+        let branch_sha = git_command_output(&repo_directory, ["rev-parse", "refs/heads/release"]);
+        assert_ne!(tagged_sha, branch_sha);
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+
+        repository
+            .checkout_tag("release".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git_command_output(&repo_directory, ["rev-parse", "HEAD"]),
+            tagged_sha,
+            "the tag must win over the same-named branch"
+        );
+        assert_eq!(
+            git_command_output(&repo_directory, ["branch", "--show-current"]),
+            "",
+            "checking out a tag must leave HEAD detached"
+        );
+
+        assert!(
+            repository
+                .checkout_tag("does-not-exist".to_string())
+                .await
+                .is_err()
+        );
+    }
+
     async fn test_change_branch_creates_local_tracking_branch_from_remote(cx: &mut TestAppContext) {
         disable_git_global_config();
         cx.executor().allow_parking();

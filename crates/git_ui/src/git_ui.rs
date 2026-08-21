@@ -13,7 +13,7 @@ use git::{
 };
 use gpui::{
     App, ClipboardItem, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
+    PromptLevel, SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
 };
 use menu::{Cancel, Confirm};
 use project::git_store::Repository;
@@ -553,6 +553,51 @@ fn rename_current_branch(
     workspace.toggle_modal(window, cx, |window, cx| {
         RenameBranchModal::new(current_branch_name, repo, window, cx)
     });
+}
+
+/// Checks out a tag, after confirming.
+///
+/// This leaves the repository on a detached HEAD, which is easy to end up in by
+/// accident and confusing to be in unknowingly, so the prompt names the state
+/// and how to leave it rather than just asking to proceed.
+pub(crate) fn checkout_tag(
+    tag_name: SharedString,
+    repository: Option<WeakEntity<Repository>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(repository) = repository.and_then(|repository| repository.upgrade()) else {
+        return;
+    };
+    let prompt = window.prompt(
+        PromptLevel::Warning,
+        &format!("Check out tag {tag_name}?"),
+        Some(
+            "This leaves you on a detached HEAD: commits you make will not belong to any \
+             branch. Switch to a branch, or create one from here, to get back.",
+        ),
+        &["Check Out", "Cancel"],
+        cx,
+    );
+    window
+        .spawn(cx, async move |cx| {
+            if prompt.await.ok() != Some(0) {
+                return;
+            }
+            let checked_out = cx
+                .update(|_, cx| {
+                    repository.update(cx, |repository, _| {
+                        repository.checkout_tag(tag_name.to_string())
+                    })
+                })
+                .ok();
+            if let Some(checked_out) = checked_out
+                && let Ok(Err(error)) = checked_out.await
+            {
+                log::error!("failed to check out tag: {error:#}");
+            }
+        })
+        .detach();
 }
 
 fn copy_branch_name(workspace: &mut Workspace, cx: &mut Context<Workspace>) {

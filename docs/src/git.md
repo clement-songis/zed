@@ -193,6 +193,14 @@ To delete a branch, open the branch switcher with {#action git::Switch}, find th
 
 > **Note:** You cannot delete the branch you currently have checked out. Switch to a different branch first.
 
+### Checking Out a Tag
+
+To look at the state of the repository at a tag, right-click the commit it points at and choose **Check Out Tag**.
+
+This leaves you on a detached HEAD: commits made from there belong to no branch. Zed says so before proceeding. To get back, switch to a branch, or create one from the current commit.
+
+If a branch and a tag share a name, Zed checks out the tag.
+
 ## Git Worktrees
 
 Git worktrees let you keep multiple checkouts of the same repository on disk at the same time.
