@@ -57,6 +57,7 @@ pub enum FakeCommitDataEntry {
 
 #[derive(Debug, Clone)]
 pub struct FakeGitRepositoryState {
+    pub tags: HashSet<String>,
     pub commit_history: Vec<FakeCommitSnapshot>,
     pub event_emitter: async_channel::Sender<PathBuf>,
     pub unmerged_paths: HashMap<RepoPath, UnmergedStatus>,
@@ -86,6 +87,7 @@ pub struct FakeGitRepositoryState {
 impl FakeGitRepositoryState {
     pub fn new(event_emitter: async_channel::Sender<PathBuf>) -> Self {
         FakeGitRepositoryState {
+            tags: Default::default(),
             event_emitter,
             head_contents: Default::default(),
             index_contents: Default::default(),
@@ -945,6 +947,17 @@ impl GitRepository for FakeGitRepository {
                 state.remotes.insert(remote.to_owned(), "".to_owned());
             }
             state.branches.insert(name);
+            Ok(())
+        })
+    }
+
+    fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            if !state.tags.contains(&name) {
+                bail!("tag '{name}' not found");
+            }
+            // A detached HEAD has no branch name.
+            state.current_branch_name = None;
             Ok(())
         })
     }
