@@ -7,13 +7,14 @@ use workspace::{Toast, notifications::NotificationId};
 mod blame_ui;
 pub mod clone;
 
+use git::repository::ResetMode;
 use git::{
     repository::{Branch, CommitDetails, Upstream, UpstreamTracking, UpstreamTrackingStatus},
     status::{FileStatus, StatusCode, UnmergedStatus, UnmergedStatusCode},
 };
 use gpui::{
     App, ClipboardItem, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
+    PromptLevel, SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
 };
 use menu::{Cancel, Confirm};
 use project::git_store::Repository;
@@ -553,6 +554,60 @@ fn rename_current_branch(
     workspace.toggle_modal(window, cx, |window, cx| {
         RenameBranchModal::new(current_branch_name, repo, window, cx)
     });
+}
+
+/// Resets the current branch to `commit`.
+///
+/// Only `Hard` can destroy work, so it is the only mode that spells out what is
+/// lost; the others move the branch pointer and leave the files alone.
+pub(crate) fn reset_to_commit(
+    commit: SharedString,
+    mode: ResetMode,
+    repository: Option<WeakEntity<Repository>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(repository) = repository.and_then(|repository| repository.upgrade()) else {
+        return;
+    };
+    let (label, detail) = match mode {
+        ResetMode::Soft => ("Soft reset", "Committed changes become staged."),
+        ResetMode::Mixed => ("Mixed reset", "Committed changes become unstaged."),
+        ResetMode::Hard => (
+            "Hard reset",
+            "Uncommitted changes will be discarded. This cannot be undone.",
+        ),
+        ResetMode::Keep => (
+            "Keep reset",
+            "Refuses rather than discarding if a changed file would be overwritten.",
+        ),
+    };
+    let prompt = window.prompt(
+        PromptLevel::Warning,
+        &format!("{label} to {commit}?"),
+        Some(detail),
+        &["Reset", "Cancel"],
+        cx,
+    );
+    window
+        .spawn(cx, async move |cx| {
+            if prompt.await.ok() != Some(0) {
+                return;
+            }
+            let reset = cx
+                .update(|_, cx| {
+                    repository.update(cx, |repository, cx| {
+                        repository.reset(commit.to_string(), mode, cx)
+                    })
+                })
+                .ok();
+            if let Some(reset) = reset
+                && let Ok(Err(error)) = reset.await
+            {
+                log::error!("failed to reset: {error:#}");
+            }
+        })
+        .detach();
 }
 
 fn copy_branch_name(workspace: &mut Workspace, cx: &mut Context<Workspace>) {

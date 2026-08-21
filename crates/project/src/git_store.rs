@@ -4399,6 +4399,8 @@ impl GitStore {
         let mode = match envelope.payload.mode() {
             git_reset::ResetMode::Soft => ResetMode::Soft,
             git_reset::ResetMode::Mixed => ResetMode::Mixed,
+            git_reset::ResetMode::Hard => ResetMode::Hard,
+            git_reset::ResetMode::Keep => ResetMode::Keep,
         };
 
         repository_handle
@@ -6926,6 +6928,8 @@ impl Repository {
                             mode: match reset_mode {
                                 ResetMode::Soft => git_reset::ResetMode::Soft.into(),
                                 ResetMode::Mixed => git_reset::ResetMode::Mixed.into(),
+                                ResetMode::Hard => git_reset::ResetMode::Hard.into(),
+                                ResetMode::Keep => git_reset::ResetMode::Keep.into(),
                             },
                         })
                         .await?;

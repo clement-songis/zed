@@ -168,6 +168,19 @@ Zed offers two commit textareas:
 1. The first one is available right at the bottom of the Git Panel. Hitting {#kb git::Commit} immediately commits all of your staged changes.
 2. The second is available via the action {#action git::ExpandCommitEditor} or via hitting the {#kb git::ExpandCommitEditor} while focused in the Git Panel commit textarea.
 
+### Resetting to a Commit
+
+Right-click a commit in the Git Graph or the Git Panel's History tab and use **Reset to Here** to move the current branch to it. The four modes differ in what they touch:
+
+| Mode | Branch | Index | Working tree |
+| --- | --- | --- | --- |
+| Soft | moved | kept | kept — the committed changes appear staged |
+| Mixed | moved | reset | kept — the committed changes appear unstaged |
+| Keep | moved | reset | kept, but refuses if a changed file would be overwritten |
+| Hard | moved | reset | **reset — uncommitted changes are discarded** |
+
+Only Hard destroys work, and Zed says so before proceeding.
+
 ### Undoing a Commit
 
 As soon as you commit in Zed, in the Git Panel, you'll see a bar right under the commit textarea, which will show the recently submitted commit.
