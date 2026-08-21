@@ -228,6 +228,14 @@ For agent-specific workflows, see [Worktree Isolation](./ai/parallel-agents.md#w
 If your project contains multiple Git repositories (i.e., multi-root folders), Zed creates a linked worktree for each repository when creating a new worktree from the picker.
 Non-Git folders in the same project are included in the new workspace as-is.
 
+## Operations in Progress
+
+When the repository is in the middle of a multi-step operation — a merge, a rebase, a cherry-pick, a revert, or a bisect — the Git Panel shows a banner naming it, with the current step and the branch being returned to when git records them.
+
+Without it, a repository stopped mid-rebase looks like it simply has conflicts and a detached HEAD, with nothing saying why.
+
+The banner reports what git itself reports. Note that since Git 2.26 a plain `git rebase` runs through the interactive machinery, so `git status` and Zed both describe it as an interactive rebase.
+
 ## Merge Conflicts
 
 When you encounter merge conflicts after a merge, rebase, or pull, Zed highlights the conflicting regions in your files and displays resolution buttons above each conflict.

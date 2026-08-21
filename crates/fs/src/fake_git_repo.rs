@@ -14,8 +14,8 @@ use git::{
         AskPassDelegate, Branch, CommitData, CommitDataReader, CommitDetails, CommitOptions,
         CreateWorktreeTarget, FetchOptions, FileHistoryChangedFileSets, GRAPH_CHUNK_SIZE,
         GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder, LogSource,
-        PushOptions, RefEdit, Remote, RepoPath, ResetMode, SearchCommitArgs, Worktree,
-        commit_hash_search_query,
+        PushOptions, RefEdit, Remote, RepoPath, ResetMode, SearchCommitArgs, SequencerState,
+        Worktree, commit_hash_search_query,
     },
     stash::GitStash,
     status::{
@@ -69,6 +69,7 @@ pub struct FakeGitRepositoryState {
     pub blames_at_revision: HashMap<(RepoPath, Oid), Blame>,
     pub current_branch_name: Option<String>,
     pub branches: HashSet<String>,
+    pub sequencer_state: Option<SequencerState>,
     /// List of remotes, keys are names and values are URLs
     pub remotes: HashMap<String, String>,
     pub simulated_index_write_error_message: Option<String>,
@@ -94,6 +95,7 @@ impl FakeGitRepositoryState {
             blames_at_revision: Default::default(),
             current_branch_name: Default::default(),
             branches: Default::default(),
+            sequencer_state: None,
             simulated_index_write_error_message: Default::default(),
             simulated_create_worktree_error: Default::default(),
             simulated_graph_error: None,
@@ -947,6 +949,11 @@ impl GitRepository for FakeGitRepository {
             state.branches.insert(name);
             Ok(())
         })
+    }
+
+    fn sequencer_state(&self) -> BoxFuture<'_, Option<SequencerState>> {
+        let state = self.with_state_async(false, |state| Ok(state.sequencer_state.clone()));
+        async move { state.await.ok().flatten() }.boxed()
     }
 
     fn rename_branch(&self, branch: String, new_name: String) -> BoxFuture<'_, Result<()>> {
