@@ -32,9 +32,9 @@ use git::Oid;
 use git::commit::ParsedCommitMessage;
 use git::repository::{
     Branch, CommitData, CommitDetails, CommitOptions, CommitSummary, DiffType, FetchOptions,
-    GitCommitTemplate, GitCommitter, InitialGraphCommitData, LogOrder, LogSource, PushOptions,
-    Remote, RemoteCommandOutput, ResetMode, SequencerAdvance, SequencerOperation, Upstream,
-    UpstreamTracking, UpstreamTrackingStatus, get_git_committer,
+    GitCommitTemplate, GitCommitter, InitialGraphCommitData, LogOrder, LogSource, MergeOptions,
+    MergeOutcome, PushOptions, Remote, RemoteCommandOutput, ResetMode, SequencerAdvance,
+    SequencerOperation, Upstream, UpstreamTracking, UpstreamTrackingStatus, get_git_committer,
 };
 use git::stash::GitStash;
 use git::status::{DiffStat, StageStatus};
@@ -5386,6 +5386,19 @@ impl GitPanel {
             .any(|entry| entry.status.is_conflicted() && entry.staging.has_unstaged())
     }
 
+    fn show_info_toast(&self, message: String, cx: &mut App) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            struct GitInfoToast;
+            workspace.show_toast(
+                workspace::Toast::new(NotificationId::unique::<GitInfoToast>(), message).autohide(),
+                cx,
+            );
+        });
+    }
+
     fn show_error_toast(&self, action: impl Into<SharedString>, e: anyhow::Error, cx: &mut App) {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
@@ -6556,6 +6569,66 @@ impl GitPanel {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Merges a branch chosen from a picker into the current one.
+    ///
+    /// A merge that stops on conflicts is reported as such rather than as an
+    /// error: the sequencer banner takes over from there, offering continue
+    /// and abort.
+    fn merge_branch(&mut self, _: &git::Merge, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo) = self.active_repository.clone() else {
+            return;
+        };
+        let workspace = self.workspace.clone();
+        let current = repo
+            .read(cx)
+            .branch
+            .as_ref()
+            .map(|branch| branch.name().to_string());
+
+        cx.spawn_in(window, async move |this, cx| {
+            let scan = repo.update(cx, |repo, _| repo.branches()).await??;
+            let names: Vec<SharedString> = scan
+                .branches
+                .iter()
+                .map(|branch| SharedString::from(branch.name().to_string()))
+                // Merging the current branch into itself is a no-op.
+                .filter(|name| Some(name.as_ref()) != current.as_deref())
+                .collect();
+            anyhow::ensure!(!names.is_empty(), "No other branch to merge");
+
+            let prompt = match current.as_deref() {
+                Some(current) => format!("Pick a branch to merge into {current}"),
+                None => "Pick a branch to merge".to_string(),
+            };
+            let Some(selection) = cx
+                .update(|window, cx| {
+                    picker_prompt::prompt(&prompt, names.clone(), workspace, window, cx)
+                })?
+                .await
+            else {
+                return Ok(());
+            };
+            let branch = names.get(selection).context("branch disappeared")?.clone();
+
+            let outcome = repo
+                .update(cx, |repo, _| {
+                    repo.merge(branch.to_string(), MergeOptions::default())
+                })
+                .await?;
+
+            this.update(cx, |this, cx| match outcome {
+                Ok(MergeOutcome::Merged) => {
+                    this.show_info_toast(format!("Merged {branch}"), cx);
+                }
+                Ok(MergeOutcome::Conflicted) => {
+                    this.show_info_toast(format!("Merging {branch} stopped on conflicts"), cx);
+                }
+                Err(error) => this.show_error_toast("merge", error, cx),
+            })
+        })
+        .detach_and_log_err(cx);
     }
 
     /// Resumes the operation in progress.
@@ -8669,6 +8742,7 @@ impl Render for GitPanel {
                     .on_action(cx.listener(Self::add_to_git_info_exclude))
                     .on_action(cx.listener(Self::clean_all))
                     .on_action(cx.listener(Self::generate_commit_message_action))
+                    .on_action(cx.listener(Self::merge_branch))
                     .on_action(cx.listener(Self::stash_all))
                     .on_action(cx.listener(Self::stash_tracked))
                     .on_action(cx.listener(Self::stash_staged))

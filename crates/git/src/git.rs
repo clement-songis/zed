@@ -139,6 +139,8 @@ actions!(
         AddToGitInfoExclude,
         /// Copies the current branch name to the clipboard.
         CopyBranchName,
+        /// Merges another branch into the current one.
+        Merge,
     ]
 );
 
