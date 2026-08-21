@@ -33,8 +33,8 @@ use git::commit::ParsedCommitMessage;
 use git::repository::{
     Branch, CommitData, CommitDetails, CommitOptions, CommitSummary, DiffType, FetchOptions,
     GitCommitTemplate, GitCommitter, InitialGraphCommitData, LogOrder, LogSource, PushOptions,
-    Remote, RemoteCommandOutput, ResetMode, Upstream, UpstreamTracking, UpstreamTrackingStatus,
-    get_git_committer,
+    Remote, RemoteCommandOutput, ResetMode, SequencerOperation, Upstream, UpstreamTracking,
+    UpstreamTrackingStatus, get_git_committer,
 };
 use git::stash::GitStash;
 use git::status::{DiffStat, StageStatus};
@@ -6512,8 +6512,54 @@ impl GitPanel {
                         .color(Color::Warning),
                 )
                 .child(Label::new(label).size(LabelSize::Small))
+                .child(div().flex_1())
+                .child(
+                    Button::new("sequencer-abort", "Abort")
+                        .label_size(LabelSize::Small)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.sequencer_abort(state.operation, window, cx);
+                        })),
+                )
                 .into_any_element(),
         )
+    }
+
+    /// Abandons the operation in progress, after confirming.
+    ///
+    /// Aborting throws away conflict resolutions done so far, and unlike most
+    /// git mistakes there is no reflog entry to recover them from, so this asks
+    /// first and names what is lost.
+    fn sequencer_abort(
+        &mut self,
+        operation: SequencerOperation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.active_repository.clone() else {
+            return;
+        };
+        let prompt = window.prompt(
+            PromptLevel::Warning,
+            &format!("Abort {}?", operation.label().to_lowercase()),
+            Some("Any conflicts you have resolved will be discarded."),
+            &["Abort", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if prompt.await.ok() != Some(0) {
+                return;
+            }
+            let aborted = repo
+                .update(cx, |repo, _| repo.sequencer_abort(operation))
+                .await;
+            if let Ok(Err(error)) = aborted {
+                this.update(cx, |this, cx| {
+                    this.show_error_toast("abort", error, cx);
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
