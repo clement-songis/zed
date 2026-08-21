@@ -234,6 +234,12 @@ Non-Git folders in the same project are included in the new workspace as-is.
 
 A merge that stops on conflicts is not treated as a failure: the [operation banner](#operations-in-progress) takes over, offering to continue once you have resolved the conflicts, or to abort.
 
+## Rebasing a Branch
+
+{#action git::Rebase} lists the repository's other branches and replays the current branch's commits on top of the one you pick.
+
+As with merging, a rebase that stops on conflicts hands over to the [operation banner](#operations-in-progress), which offers to continue once each conflict is resolved, to skip the commit that stopped, or to abort.
+
 ## Operations in Progress
 
 When the repository is in the middle of a multi-step operation — a merge, a rebase, a cherry-pick, a revert, or a bisect — the Git Panel shows a banner naming it, with the current step and the branch being returned to when git records them.
