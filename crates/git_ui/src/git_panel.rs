@@ -33,8 +33,8 @@ use git::commit::ParsedCommitMessage;
 use git::repository::{
     Branch, CommitData, CommitDetails, CommitOptions, CommitSummary, DiffType, FetchOptions,
     GitCommitTemplate, GitCommitter, InitialGraphCommitData, LogOrder, LogSource, PushOptions,
-    Remote, RemoteCommandOutput, ResetMode, SequencerOperation, Upstream, UpstreamTracking,
-    UpstreamTrackingStatus, get_git_committer,
+    Remote, RemoteCommandOutput, ResetMode, SequencerAdvance, SequencerOperation, Upstream,
+    UpstreamTracking, UpstreamTrackingStatus, get_git_committer,
 };
 use git::stash::GitStash;
 use git::status::{DiffStat, StageStatus};
@@ -6513,6 +6513,40 @@ impl GitPanel {
                 )
                 .child(Label::new(label).size(LabelSize::Small))
                 .child(div().flex_1())
+                // Bisect advances by verdict rather than continue/skip, so it
+                // only gets the abort button.
+                .when(state.operation != SequencerOperation::Bisect, |this| {
+                    this.child(
+                        Button::new("sequencer-continue", "Continue")
+                            .label_size(LabelSize::Small)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.sequencer_advance(
+                                    state.operation,
+                                    SequencerAdvance::Continue,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    // A merge is a single step; there is nothing to skip past.
+                    .when(
+                        state.operation != SequencerOperation::Merge,
+                        |this| {
+                            this.child(
+                                Button::new("sequencer-skip", "Skip")
+                                    .label_size(LabelSize::Small)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.sequencer_advance(
+                                            state.operation,
+                                            SequencerAdvance::Skip,
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                        },
+                    )
+                })
                 .child(
                     Button::new("sequencer-abort", "Abort")
                         .label_size(LabelSize::Small)
@@ -6522,6 +6556,35 @@ impl GitPanel {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Resumes the operation in progress.
+    ///
+    /// Unlike aborting this is not destructive — a failure leaves the operation
+    /// exactly where it was — so it runs without confirming and surfaces any
+    /// error as a toast.
+    fn sequencer_advance(
+        &mut self,
+        operation: SequencerOperation,
+        step: SequencerAdvance,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.active_repository.clone() else {
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let advanced = repo
+                .update(cx, |repo, _| repo.sequencer_advance(operation, step))
+                .await;
+            if let Ok(Err(error)) = advanced {
+                this.update(cx, |this, cx| {
+                    this.show_error_toast("continue", error, cx);
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     /// Abandons the operation in progress, after confirming.
