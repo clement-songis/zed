@@ -350,7 +350,11 @@ impl GitRepository for FakeGitRepository {
                 ResetMode::Soft => {
                     state.head_contents = snapshot.head_contents;
                 }
-                ResetMode::Mixed => {
+                // Hard and Keep also rewrite the working tree, which lives in
+                // FakeFs rather than in this state, so they are simulated only
+                // as far as HEAD and the index. Their effect on files on disk is
+                // covered by the integration tests against real git.
+                ResetMode::Mixed | ResetMode::Hard | ResetMode::Keep => {
                     state.head_contents = snapshot.head_contents;
                     state.index_contents = state.head_contents.clone();
                 }

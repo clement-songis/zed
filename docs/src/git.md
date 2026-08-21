@@ -179,6 +179,19 @@ By default, Zed sets the commit line length to `72` but it can be configured in 
 
 Find more information about setting the `preferred-line-length` in the [Configuration](#configuration) section.
 
+### Resetting to a Commit
+
+Right-click a commit in the Git Graph or the Git Panel's History tab and use **Reset to Here** to move the current branch to it. The four modes differ in what they touch:
+
+| Mode | Branch | Index | Working tree |
+| --- | --- | --- | --- |
+| Soft | moved | kept | kept — the committed changes appear staged |
+| Mixed | moved | reset | kept — the committed changes appear unstaged |
+| Keep | moved | reset | kept, but refuses if a changed file would be overwritten |
+| Hard | moved | reset | **reset — uncommitted changes are discarded** |
+
+Only Hard destroys work, and Zed says so before proceeding.
+
 ## Branch Management
 
 ### Creating and Switching Branches
