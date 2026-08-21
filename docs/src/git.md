@@ -234,6 +234,8 @@ When the repository is in the middle of a multi-step operation — a merge, a re
 
 Without it, a repository stopped mid-rebase looks like it simply has conflicts and a detached HEAD, with nothing saying why.
 
+The banner carries an **Abort** button, which abandons the operation and returns the repository to where it stood before it started. Zed confirms first, because aborting discards any conflicts you have already resolved and there is no reflog entry to recover them from.
+
 The banner reports what git itself reports. Note that since Git 2.26 a plain `git rebase` runs through the interactive machinery, so `git status` and Zed both describe it as an interactive rebase.
 
 ## Merge Conflicts

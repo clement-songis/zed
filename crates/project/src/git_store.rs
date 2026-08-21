@@ -937,6 +937,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_get_default_branch);
         client.add_entity_request_handler(Self::handle_change_branch);
         client.add_entity_request_handler(Self::handle_create_branch);
+        client.add_entity_request_handler(Self::handle_sequencer_abort);
         client.add_entity_request_handler(Self::handle_rename_branch);
         client.add_entity_request_handler(Self::handle_create_remote);
         client.add_entity_request_handler(Self::handle_remove_remote);
@@ -4123,6 +4124,26 @@ impl GitStore {
         Ok(proto::Ack {})
     }
 
+    async fn handle_sequencer_abort(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitSequencerAbort>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let operation = proto::sequencer_state::Operation::from_i32(envelope.payload.operation)
+            .map(sequencer_operation_from_proto)
+            .context("unknown sequencer operation")?;
+
+        repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.sequencer_abort(operation)
+            })
+            .await??;
+
+        Ok(proto::Ack {})
+    }
+
     async fn handle_change_branch(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::GitChangeBranch>,
@@ -6195,17 +6216,37 @@ pub fn proto_to_stash(entry: &proto::StashEntry) -> Result<StashEntry> {
     })
 }
 
-fn sequencer_state_to_proto(state: &SequencerState) -> proto::SequencerState {
+fn sequencer_operation_to_proto(
+    operation: SequencerOperation,
+) -> proto::sequencer_state::Operation {
     use proto::sequencer_state::Operation;
+    match operation {
+        SequencerOperation::Merge => Operation::Merge,
+        SequencerOperation::Rebase => Operation::Rebase,
+        SequencerOperation::RebaseInteractive => Operation::RebaseInteractive,
+        SequencerOperation::CherryPick => Operation::CherryPick,
+        SequencerOperation::Revert => Operation::Revert,
+        SequencerOperation::Bisect => Operation::Bisect,
+    }
+}
+
+fn sequencer_operation_from_proto(
+    operation: proto::sequencer_state::Operation,
+) -> SequencerOperation {
+    use proto::sequencer_state::Operation;
+    match operation {
+        Operation::Merge => SequencerOperation::Merge,
+        Operation::Rebase => SequencerOperation::Rebase,
+        Operation::RebaseInteractive => SequencerOperation::RebaseInteractive,
+        Operation::CherryPick => SequencerOperation::CherryPick,
+        Operation::Revert => SequencerOperation::Revert,
+        Operation::Bisect => SequencerOperation::Bisect,
+    }
+}
+
+fn sequencer_state_to_proto(state: &SequencerState) -> proto::SequencerState {
     proto::SequencerState {
-        operation: match state.operation {
-            SequencerOperation::Merge => Operation::Merge,
-            SequencerOperation::Rebase => Operation::Rebase,
-            SequencerOperation::RebaseInteractive => Operation::RebaseInteractive,
-            SequencerOperation::CherryPick => Operation::CherryPick,
-            SequencerOperation::Revert => Operation::Revert,
-            SequencerOperation::Bisect => Operation::Bisect,
-        } as i32,
+        operation: sequencer_operation_to_proto(state.operation) as i32,
         step: state.step,
         total: state.total,
         head_name: state.head_name.as_ref().map(|name| name.to_string()),
@@ -6213,15 +6254,8 @@ fn sequencer_state_to_proto(state: &SequencerState) -> proto::SequencerState {
 }
 
 fn sequencer_state_from_proto(state: proto::SequencerState) -> Option<SequencerState> {
-    use proto::sequencer_state::Operation;
-    let operation = match Operation::from_i32(state.operation)? {
-        Operation::Merge => SequencerOperation::Merge,
-        Operation::Rebase => SequencerOperation::Rebase,
-        Operation::RebaseInteractive => SequencerOperation::RebaseInteractive,
-        Operation::CherryPick => SequencerOperation::CherryPick,
-        Operation::Revert => SequencerOperation::Revert,
-        Operation::Bisect => SequencerOperation::Bisect,
-    };
+    let operation = proto::sequencer_state::Operation::from_i32(state.operation)
+        .map(sequencer_operation_from_proto)?;
     Some(SequencerState {
         operation,
         step: state.step,
@@ -9523,6 +9557,35 @@ impl Repository {
                                 repository_id: id.to_proto(),
                                 branch_name,
                                 base_branch,
+                            })
+                            .await?;
+
+                        Ok(())
+                    }
+                }
+            },
+        )
+    }
+
+    pub fn sequencer_abort(
+        &mut self,
+        operation: SequencerOperation,
+    ) -> oneshot::Receiver<Result<()>> {
+        let id = self.id;
+        self.send_job(
+            "sequencer_abort",
+            Some(format!("abort {}", operation.label().to_lowercase()).into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.sequencer_abort(operation).await
+                    }
+                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                        client
+                            .request(proto::GitSequencerAbort {
+                                project_id: project_id.0,
+                                repository_id: id.to_proto(),
+                                operation: sequencer_operation_to_proto(operation) as i32,
                             })
                             .await?;
 

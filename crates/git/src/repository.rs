@@ -861,6 +861,10 @@ pub trait GitRepository: Send + Sync {
     /// any, so the UI can say why the repository looks the way it does.
     fn sequencer_state(&self) -> BoxFuture<'_, Option<SequencerState>>;
 
+    /// Abandons the operation in progress, returning the repository to where it
+    /// stood before it started.
+    fn sequencer_abort(&self, operation: SequencerOperation) -> BoxFuture<'_, Result<()>>;
+
     fn delete_branch(
         &self,
         is_remote: bool,
@@ -2409,6 +2413,35 @@ impl GitRepository for RealGitRepository {
                 git_binary
                     .run(&["branch", "-m", &branch, &new_name])
                     .await?;
+                anyhow::Ok(())
+            })
+            .boxed()
+    }
+
+    fn sequencer_abort(&self, operation: SequencerOperation) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary_in_worktree();
+
+        self.executor
+            .spawn(async move {
+                let git_binary = git_binary?;
+                // Each operation aborts through its own subcommand; there is no
+                // single "abort whatever is running" in git.
+                let args: &[&str] = match operation {
+                    SequencerOperation::Merge => &["merge", "--abort"],
+                    SequencerOperation::Rebase | SequencerOperation::RebaseInteractive => {
+                        &["rebase", "--abort"]
+                    }
+                    SequencerOperation::CherryPick => &["cherry-pick", "--abort"],
+                    SequencerOperation::Revert => &["revert", "--abort"],
+                    SequencerOperation::Bisect => &["bisect", "reset"],
+                };
+
+                let output = git_binary.build_command(args).output().await?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "Failed to abort:\n{}",
+                    String::from_utf8_lossy(&output.stderr),
+                );
                 anyhow::Ok(())
             })
             .boxed()
@@ -4943,11 +4976,41 @@ mod tests {
         );
         assert_eq!(state.head_name.as_deref(), Some("main"));
 
-        git.run(&["rebase", "--abort"]).await.unwrap();
+        // Aborting through our own command, not git's, so the mapping from
+        // operation to subcommand is what is under test.
+        let head_before_abort = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
+        repository
+            .sequencer_abort(state.operation)
+            .await
+            .expect("aborting a stopped rebase should succeed");
+
         assert_eq!(
             repository.sequencer_state().await,
             None,
             "aborting clears the state"
+        );
+        assert_eq!(
+            git_command_output(&repo_directory, ["branch", "--show-current"]),
+            "main",
+            "aborting returns to the branch the rebase started from"
+        );
+        assert_ne!(
+            git_command_output(&repo_directory, ["rev-parse", "HEAD"]),
+            head_before_abort,
+            "HEAD moves back off the detached rebase position"
+        );
+        assert_eq!(
+            fs::read_to_string(repo_directory.join("file.txt")).unwrap(),
+            "main\n",
+            "the working tree is restored to its pre-rebase contents"
+        );
+
+        assert!(
+            repository
+                .sequencer_abort(SequencerOperation::Rebase)
+                .await
+                .is_err(),
+            "aborting with nothing in progress must report an error"
         );
     }
 
