@@ -7,6 +7,7 @@ use workspace::{Toast, notifications::NotificationId};
 mod blame_ui;
 pub mod clone;
 
+use git::repository::{MergeOutcome, ResetMode};
 use git::{
     repository::{Branch, CommitDetails, Upstream, UpstreamTracking, UpstreamTrackingStatus},
     status::{FileStatus, StatusCode, UnmergedStatus, UnmergedStatusCode},
@@ -553,6 +554,50 @@ fn rename_current_branch(
     workspace.toggle_modal(window, cx, |window, cx| {
         RenameBranchModal::new(current_branch_name, repo, window, cx)
     });
+}
+
+/// Applies a commit on top of the current branch, or undoes it.
+///
+/// Both stop on conflicts the same way a merge does, so the outcome is handed
+/// to the sequencer banner rather than reported as an error.
+pub(crate) fn apply_commit(
+    commit: SharedString,
+    undo: bool,
+    repository: Option<WeakEntity<Repository>>,
+    workspace: WeakEntity<Workspace>,
+    cx: &mut App,
+) {
+    let Some(repository) = repository.and_then(|repository| repository.upgrade()) else {
+        return;
+    };
+    let verb = if undo { "Revert" } else { "Cherry-pick" };
+    cx.spawn(async move |cx| {
+        let outcome = repository
+            .update(cx, |repository, _| {
+                if undo {
+                    repository.revert(vec![commit.to_string()], None)
+                } else {
+                    // -x records where the commit came from, which is the
+                    // convention when moving commits between shared branches.
+                    repository.cherry_pick(vec![commit.to_string()], true)
+                }
+            })
+            .await?;
+
+        let message = match outcome {
+            Ok(MergeOutcome::Merged) => format!("{verb} of {commit} applied"),
+            Ok(MergeOutcome::Conflicted) => format!("{verb} of {commit} stopped on conflicts"),
+            Err(error) => format!("{verb} failed: {error}"),
+        };
+        workspace.update(cx, |workspace, cx| {
+            struct ApplyCommitToast;
+            workspace.show_toast(
+                Toast::new(NotificationId::unique::<ApplyCommitToast>(), message).autohide(),
+                cx,
+            );
+        })
+    })
+    .detach_and_log_err(cx);
 }
 
 fn copy_branch_name(workspace: &mut Workspace, cx: &mut Context<Workspace>) {

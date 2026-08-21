@@ -513,7 +513,11 @@ message Envelope {
     GitMerge git_merge = 482;
     GitMergeResponse git_merge_response = 483;
     GitRebase git_rebase = 484;
-    GitRebaseResponse git_rebase_response = 485;  // current max
+    GitRebaseResponse git_rebase_response = 485;
+    GitCherryPick git_cherry_pick = 486;
+    GitCherryPickResponse git_cherry_pick_response = 487;
+    GitRevert git_revert = 488;
+    GitRevertResponse git_revert_response = 489;  // current max
   }
 
   reserved 87 to 88;

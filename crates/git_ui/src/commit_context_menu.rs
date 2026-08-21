@@ -77,6 +77,32 @@ pub(crate) fn commit_context_menu(
                     );
                 }
             })
+            .entry("Cherry-Pick", None, {
+                let repository = repository.clone();
+                let workspace = workspace.clone();
+                move |_window, cx| {
+                    crate::apply_commit(
+                        SharedString::from(sha.to_string()),
+                        false,
+                        repository.clone(),
+                        workspace.clone(),
+                        cx,
+                    );
+                }
+            })
+            .entry("Revert", None, {
+                let repository = repository.clone();
+                let workspace = workspace.clone();
+                move |_window, cx| {
+                    crate::apply_commit(
+                        SharedString::from(sha.to_string()),
+                        true,
+                        repository.clone(),
+                        workspace.clone(),
+                        cx,
+                    );
+                }
+            })
             .entry(
                 "Copy SHA",
                 Some(CopyCommitSha.boxed_clone()),
