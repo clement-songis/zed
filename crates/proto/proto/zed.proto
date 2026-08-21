@@ -508,7 +508,8 @@ message Envelope {
     RefreshDocumentSymbols refresh_document_symbols = 477;
     BlameBufferAtRevision blame_buffer_at_revision = 478;
     BlameBufferAtRevisionResponse blame_buffer_at_revision_response = 479;
-    GitSequencerAbort git_sequencer_abort = 480;  // current max
+    GitSequencerAbort git_sequencer_abort = 480;
+    GitSequencerAdvance git_sequencer_advance = 481;  // current max
   }
 
   reserved 87 to 88;
