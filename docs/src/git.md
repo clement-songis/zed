@@ -228,6 +228,12 @@ For agent-specific workflows, see [Worktree Isolation](./ai/parallel-agents.md#w
 If your project contains multiple Git repositories (i.e., multi-root folders), Zed creates a linked worktree for each repository when creating a new worktree from the picker.
 Non-Git folders in the same project are included in the new workspace as-is.
 
+## Merging a Branch
+
+{#action git::Merge} lists the repository's other branches and merges the one you pick into the current branch.
+
+A merge that stops on conflicts is not treated as a failure: the [operation banner](#operations-in-progress) takes over, offering to continue once you have resolved the conflicts, or to abort.
+
 ## Operations in Progress
 
 When the repository is in the middle of a multi-step operation — a merge, a rebase, a cherry-pick, a revert, or a bisect — the Git Panel shows a banner naming it, with the current step and the branch being returned to when git records them.

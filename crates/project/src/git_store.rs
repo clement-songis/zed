@@ -37,9 +37,10 @@ use git::{
         Branch, BranchesScanResult, CommitData, CommitDetails, CommitFileStatus, CommitOptions,
         CreateWorktreeTarget, DiffStatType, DiffType, FetchOptions, FileHistoryChangedFileSets,
         GitCommitTemplate, GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData,
-        LogOrder, LogSource, PushOptions, Remote, RemoteCommandOutput, RepoPath, ResetMode,
-        SearchCommitArgs, SequencerAdvance, SequencerOperation, SequencerState,
-        UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag, is_binary_content,
+        LogOrder, LogSource, MergeOptions, MergeOutcome, PushOptions, Remote, RemoteCommandOutput,
+        RepoPath, ResetMode, SearchCommitArgs, SequencerAdvance, SequencerOperation,
+        SequencerState, UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag,
+        is_binary_content,
     },
     stash::{GitStash, StashEntry},
     status::{
@@ -939,6 +940,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_create_branch);
         client.add_entity_request_handler(Self::handle_sequencer_abort);
         client.add_entity_request_handler(Self::handle_sequencer_advance);
+        client.add_entity_request_handler(Self::handle_merge);
         client.add_entity_request_handler(Self::handle_rename_branch);
         client.add_entity_request_handler(Self::handle_create_remote);
         client.add_entity_request_handler(Self::handle_remove_remote);
@@ -4123,6 +4125,32 @@ impl GitStore {
             .await??;
 
         Ok(proto::Ack {})
+    }
+
+    async fn handle_merge(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitMerge>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::GitMergeResponse> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let payload = envelope.payload;
+        let options = MergeOptions {
+            no_fast_forward: payload.no_fast_forward,
+            fast_forward_only: payload.fast_forward_only,
+            squash: payload.squash,
+            no_commit: payload.no_commit,
+        };
+
+        let outcome = repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.merge(payload.branch, options)
+            })
+            .await??;
+
+        Ok(proto::GitMergeResponse {
+            conflicted: outcome == MergeOutcome::Conflicted,
+        })
     }
 
     async fn handle_sequencer_advance(
@@ -9588,6 +9616,46 @@ impl Repository {
                             .await?;
 
                         Ok(())
+                    }
+                }
+            },
+        )
+    }
+
+    pub fn merge(
+        &mut self,
+        branch: String,
+        options: MergeOptions,
+    ) -> oneshot::Receiver<Result<MergeOutcome>> {
+        let id = self.id;
+        self.send_job(
+            "merge",
+            Some(format!("git merge {branch}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => backend.merge(branch, options, environment).await,
+                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                        let response = client
+                            .request(proto::GitMerge {
+                                project_id: project_id.0,
+                                repository_id: id.to_proto(),
+                                branch,
+                                no_fast_forward: options.no_fast_forward,
+                                fast_forward_only: options.fast_forward_only,
+                                squash: options.squash,
+                                no_commit: options.no_commit,
+                            })
+                            .await?;
+
+                        Ok(if response.conflicted {
+                            MergeOutcome::Conflicted
+                        } else {
+                            MergeOutcome::Merged
+                        })
                     }
                 }
             },
