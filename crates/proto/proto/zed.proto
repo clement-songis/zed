@@ -511,7 +511,9 @@ message Envelope {
     GitSequencerAbort git_sequencer_abort = 480;
     GitSequencerAdvance git_sequencer_advance = 481;
     GitMerge git_merge = 482;
-    GitMergeResponse git_merge_response = 483;  // current max
+    GitMergeResponse git_merge_response = 483;
+    GitRebase git_rebase = 484;
+    GitRebaseResponse git_rebase_response = 485;  // current max
   }
 
   reserved 87 to 88;

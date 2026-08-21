@@ -952,6 +952,20 @@ impl GitRepository for FakeGitRepository {
         })
     }
 
+    fn rebase(
+        &self,
+        upstream: String,
+        _onto: Option<String>,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>> {
+        self.with_state_async(true, move |state| {
+            if !state.branches.contains(&upstream) {
+                bail!("branch '{upstream}' not found");
+            }
+            Ok(MergeOutcome::Merged)
+        })
+    }
+
     fn merge(
         &self,
         branch: String,

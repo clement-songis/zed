@@ -207,6 +207,17 @@ message GitCreateBranch {
   optional string base_branch = 5;
 }
 
+message GitRebase {
+  uint64 project_id = 1;
+  uint64 repository_id = 2;
+  string upstream = 3;
+  optional string onto = 4;
+}
+
+message GitRebaseResponse {
+  bool conflicted = 1;
+}
+
 message GitMerge {
   uint64 project_id = 1;
   uint64 repository_id = 2;
