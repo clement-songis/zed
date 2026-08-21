@@ -33,6 +33,23 @@ pub(crate) enum CommitContextMenuSource {
     GitPanel,
 }
 
+/// Routes tag pushing through the git panel, which owns the askpass delegate
+/// that a network operation needs.
+fn push_tag(
+    tag_name: SharedString,
+    workspace: &WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    workspace
+        .update(cx, |workspace, cx| {
+            if let Some(panel) = workspace.panel::<crate::git_panel::GitPanel>(cx) {
+                panel.update(cx, |panel, cx| panel.push_tag(tag_name, window, cx));
+            }
+        })
+        .ok();
+}
+
 pub(crate) fn commit_context_menu(
     commit: CommitContextMenuData,
     source: CommitContextMenuSource,
@@ -122,6 +139,34 @@ pub(crate) fn commit_context_menu(
                                     cx.write_to_clipboard(ClipboardItem::new_string(
                                         tag_name_to_copy.to_string(),
                                     ));
+                                });
+                            }
+                            menu
+                        }),
+                    }
+                })
+            })
+            .when(ref_name.is_none() && !commit.tag_names.is_empty(), |menu| {
+                menu.map(|menu| {
+                    let tag_names = commit.tag_names.clone();
+                    let workspace = workspace.clone();
+                    let push_tag_label = "Push Tag";
+
+                    match tag_names.as_slice() {
+                        [tag_name] => {
+                            let tag_name = tag_name.clone();
+                            let label = format!("{push_tag_label}: {tag_name}");
+                            menu.entry(label, None, move |window, cx| {
+                                push_tag(tag_name.clone(), &workspace, window, cx);
+                            })
+                        }
+                        _ => menu.submenu(push_tag_label, move |menu, _window, _cx| {
+                            let mut menu = menu.fixed_width(COMMIT_TAG_LIST_WIDTH_IN_REMS.into());
+
+                            for tag_name in tag_names.clone() {
+                                let workspace = workspace.clone();
+                                menu = menu.entry(tag_name.clone(), None, move |window, cx| {
+                                    push_tag(tag_name.clone(), &workspace, window, cx);
                                 });
                             }
                             menu

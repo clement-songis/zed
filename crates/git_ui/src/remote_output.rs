@@ -20,6 +20,7 @@ pub enum RemoteAction {
     Fetch(Option<Remote>),
     Pull(Remote),
     Push(SharedString, Remote),
+    PushTag(SharedString, Remote),
 }
 
 impl RemoteAction {
@@ -27,7 +28,7 @@ impl RemoteAction {
         match self {
             RemoteAction::Fetch(_) => "fetch",
             RemoteAction::Pull(_) => "pull",
-            RemoteAction::Push(_, _) => "push",
+            RemoteAction::Push(_, _) | RemoteAction::PushTag(_, _) => "push",
         }
     }
 }
@@ -81,6 +82,22 @@ fn extract_url(line: &str) -> Option<String> {
 
 pub fn format_output(action: &RemoteAction, output: RemoteCommandOutput) -> SuccessMessage {
     match action {
+        RemoteAction::PushTag(tag_name, remote) => {
+            // Git says nothing on stdout and only "* [new tag]" on stderr, so
+            // there is no count to report — and no pull request to open either,
+            // which is why this is not folded into `Push`.
+            if output.stderr.contains("Everything up-to-date") {
+                SuccessMessage {
+                    message: format!("Tag {tag_name} already on {}", remote.name),
+                    style: SuccessStyle::Toast,
+                }
+            } else {
+                SuccessMessage {
+                    message: format!("Pushed tag {tag_name} to {}", remote.name),
+                    style: SuccessStyle::ToastWithLog { output },
+                }
+            }
+        }
         RemoteAction::Fetch(remote) => {
             if output.stderr.is_empty() {
                 SuccessMessage {

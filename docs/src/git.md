@@ -193,6 +193,10 @@ To delete a branch, open the branch switcher with {#action git::Switch}, find th
 
 > **Note:** You cannot delete the branch you currently have checked out. Switch to a different branch first.
 
+### Pushing a Tag
+
+Creating a tag only creates it locally. To publish it, right-click the commit it points at and choose **Push Tag**. When the repository has several remotes, Zed asks which one to use; with a single remote it pushes there directly.
+
 ## Git Worktrees
 
 Git worktrees let you keep multiple checkouts of the same repository on disk at the same time.
