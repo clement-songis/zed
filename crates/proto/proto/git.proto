@@ -137,6 +137,23 @@ message UpdateRepository {
   optional string repository_dir_abs_path = 19;
   optional string common_dir_abs_path = 20;
   optional string branch_list_error = 21;
+  optional SequencerState sequencer_state = 22;
+}
+
+message SequencerState {
+  Operation operation = 1;
+  optional uint32 step = 2;
+  optional uint32 total = 3;
+  optional string head_name = 4;
+
+  enum Operation {
+    MERGE = 0;
+    REBASE = 1;
+    REBASE_INTERACTIVE = 2;
+    CHERRY_PICK = 3;
+    REVERT = 4;
+    BISECT = 5;
+  }
 }
 
 message RemoveRepository {

@@ -3,7 +3,7 @@ use crate::stash::GitStash;
 use crate::status::{
     DiffTreeType, FileStatus, GitStatus, StatusCode, TrackedStatus, TreeDiff, TreeDiffStatus,
 };
-use crate::{Oid, RunHook, SHORT_SHA_LENGTH};
+use crate::{BISECT_LOG, Oid, REBASE_APPLY_DIR, REBASE_MERGE_DIR, RunHook, SHORT_SHA_LENGTH};
 use anyhow::{Context as _, Result, anyhow, bail};
 use async_channel::Sender;
 use collections::HashMap;
@@ -627,6 +627,45 @@ pub struct Remote {
     pub name: SharedString,
 }
 
+/// A multi-step git operation that is currently in progress.
+///
+/// Git records these as files inside the worktree's git directory; they are the
+/// same markers `git status` reads to print "You are currently rebasing".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SequencerOperation {
+    Merge,
+    Rebase,
+    RebaseInteractive,
+    CherryPick,
+    Revert,
+    Bisect,
+}
+
+impl SequencerOperation {
+    /// Human-readable name, used in the UI banner.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Merge => "Merge",
+            Self::Rebase => "Rebase",
+            Self::RebaseInteractive => "Interactive rebase",
+            Self::CherryPick => "Cherry-pick",
+            Self::Revert => "Revert",
+            Self::Bisect => "Bisect",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SequencerState {
+    pub operation: SequencerOperation,
+    /// Which step of how many, when git records progress. Rebases do; a merge
+    /// or a single cherry-pick has no step count.
+    pub step: Option<u32>,
+    pub total: Option<u32>,
+    /// The branch the operation will return to, when git records one.
+    pub head_name: Option<SharedString>,
+}
+
 pub enum ResetMode {
     /// Reset the branch pointer, leave index and worktree unchanged (this will make it look like things that were
     /// committed are now staged).
@@ -833,6 +872,9 @@ pub trait GitRepository: Send + Sync {
     fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>>;
     /// Checks out a tag, leaving HEAD detached at the commit it points to.
     fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>>;
+    /// Reports the multi-step operation the repository is in the middle of, if
+    /// any, so the UI can say why the repository looks the way it does.
+    fn sequencer_state(&self) -> BoxFuture<'_, Option<SequencerState>>;
 
     fn delete_branch(
         &self,
@@ -2436,6 +2478,82 @@ impl GitRepository for RealGitRepository {
                     String::from_utf8_lossy(&output.stderr),
                 );
                 anyhow::Ok(())
+    fn sequencer_state(&self) -> BoxFuture<'_, Option<SequencerState>> {
+        // These markers live in the worktree's own git directory, not the common
+        // one: a linked worktree can be mid-rebase while the main checkout is not.
+        let repository_dir = self.git_dir.clone();
+
+        self.executor
+            .spawn(async move {
+                let read_number = |name: &str| {
+                    std::fs::read_to_string(repository_dir.join(name))
+                        .ok()
+                        .and_then(|contents| contents.trim().parse::<u32>().ok())
+                };
+                let read_line = |name: &str| {
+                    std::fs::read_to_string(repository_dir.join(name))
+                        .ok()
+                        .map(|contents| SharedString::from(contents.trim().to_owned()))
+                };
+                let exists = |name: &str| repository_dir.join(name).exists();
+
+                // Order matters: a rebase can have MERGE_HEAD present while
+                // stopped on a conflict, so rebase state is checked first.
+                if exists(REBASE_MERGE_DIR) {
+                    // The `interactive` marker reflects which backend git used,
+                    // not whether the user typed `-i`: since git 2.26 the merge
+                    // backend is the default and writes it for a plain `git
+                    // rebase` too. `git status` calls that state "interactive
+                    // rebase in progress", and matching its wording is what lets
+                    // someone compare the two and see the same thing.
+                    let operation = if exists(&format!("{REBASE_MERGE_DIR}/interactive")) {
+                        SequencerOperation::RebaseInteractive
+                    } else {
+                        SequencerOperation::Rebase
+                    };
+                    return Some(SequencerState {
+                        operation,
+                        step: read_number(&format!("{REBASE_MERGE_DIR}/msgnum")),
+                        total: read_number(&format!("{REBASE_MERGE_DIR}/end")),
+                        head_name: read_line(&format!("{REBASE_MERGE_DIR}/head-name")).map(
+                            |head| {
+                                SharedString::from(
+                                    head.strip_prefix("refs/heads/").unwrap_or(&head).to_owned(),
+                                )
+                            },
+                        ),
+                    });
+                }
+                if exists(REBASE_APPLY_DIR) {
+                    return Some(SequencerState {
+                        operation: SequencerOperation::Rebase,
+                        step: read_number(&format!("{REBASE_APPLY_DIR}/next")),
+                        total: read_number(&format!("{REBASE_APPLY_DIR}/last")),
+                        head_name: None,
+                    });
+                }
+
+                let simple = |operation| {
+                    Some(SequencerState {
+                        operation,
+                        step: None,
+                        total: None,
+                        head_name: None,
+                    })
+                };
+                if exists("CHERRY_PICK_HEAD") {
+                    return simple(SequencerOperation::CherryPick);
+                }
+                if exists("REVERT_HEAD") {
+                    return simple(SequencerOperation::Revert);
+                }
+                if exists("MERGE_HEAD") {
+                    return simple(SequencerOperation::Merge);
+                }
+                if exists(BISECT_LOG) {
+                    return simple(SequencerOperation::Bisect);
+                }
+                None
             })
             .boxed()
     }
@@ -4838,6 +4956,8 @@ mod tests {
     async fn test_push_tag_refspec(cx: &mut TestAppContext) {
     #[gpui::test]
     async fn test_checkout_tag_detaches_and_disambiguates(cx: &mut TestAppContext) {
+    #[gpui::test]
+    async fn test_sequencer_state_detects_operations(cx: &mut TestAppContext) {
         disable_git_global_config();
         cx.executor().allow_parking();
 
@@ -4886,6 +5006,19 @@ mod tests {
         // resolves to the tag, which is the very confusion under test.
         let branch_sha = git_command_output(&repo_directory, ["rev-parse", "refs/heads/release"]);
         assert_ne!(tagged_sha, branch_sha);
+        fs::write(repo_directory.join("file.txt"), "base\n").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "base"]);
+
+        git_command(&repo_directory, ["switch", "-c", "topic"]);
+        fs::write(repo_directory.join("file.txt"), "topic\n").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "topic"]);
+
+        git_command(&repo_directory, ["switch", "main"]);
+        fs::write(repo_directory.join("file.txt"), "main\n").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "main"]);
 
         let repository = RealGitRepository::new(
             &repo_directory.join(".git"),
@@ -5034,6 +5167,38 @@ mod tests {
                 .checkout_tag("does-not-exist".to_string())
                 .await
                 .is_err()
+        assert_eq!(
+            repository.sequencer_state().await,
+            None,
+            "a repository at rest reports no operation"
+        );
+
+        // A conflicting rebase stops mid-flight and leaves the markers behind.
+        let git = repository.git_binary_in_worktree().unwrap();
+        assert!(
+            git.run(&["rebase", "topic"]).await.is_err(),
+            "the rebase is expected to stop on a conflict"
+        );
+
+        let state = repository
+            .sequencer_state()
+            .await
+            .expect("a stopped rebase must be reported");
+        // Not a mistake: git 2.26+ runs even a plain `git rebase` through the
+        // merge backend, and `git status` reports it as an interactive rebase.
+        assert_eq!(state.operation, SequencerOperation::RebaseInteractive);
+        assert_eq!(
+            (state.step, state.total),
+            (Some(1), Some(1)),
+            "git records progress for a rebase, and the banner shows it"
+        );
+        assert_eq!(state.head_name.as_deref(), Some("main"));
+
+        git.run(&["rebase", "--abort"]).await.unwrap();
+        assert_eq!(
+            repository.sequencer_state().await,
+            None,
+            "aborting clears the state"
         );
     }
 

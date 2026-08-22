@@ -38,8 +38,8 @@ use git::{
         CreateWorktreeTarget, DiffStatType, DiffType, FetchOptions, FileHistoryChangedFileSets,
         GitCommitTemplate, GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData,
         LogOrder, LogSource, PushOptions, Remote, RemoteCommandOutput, RepoPath, ResetMode,
-        SearchCommitArgs, UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag,
-        is_binary_content,
+        SearchCommitArgs, SequencerOperation, SequencerState, UpstreamTrackingStatus,
+        Worktree as GitWorktree, delete_branch_flag, is_binary_content,
     },
     stash::{GitStash, StashEntry},
     status::{
@@ -553,6 +553,9 @@ pub struct RepositorySnapshot {
     pub remote_upstream_url: Option<String>,
     pub stash_entries: GitStash,
     pub linked_worktrees: Arc<[GitWorktree]>,
+    /// The multi-step git operation in progress, if any. Drives the banner that
+    /// explains why the repository is in an unusual state.
+    pub sequencer_state: Option<SequencerState>,
 }
 
 type JobId = u64;
@@ -5956,6 +5959,7 @@ impl RepositorySnapshot {
             remote_upstream_url: None,
             stash_entries: Default::default(),
             linked_worktrees: Arc::from([]),
+            sequencer_state: None,
             path_style,
         }
     }
@@ -5968,6 +5972,7 @@ impl RepositorySnapshot {
                 .branch_list_error
                 .as_ref()
                 .map(|error| error.to_string()),
+            sequencer_state: self.sequencer_state.as_ref().map(sequencer_state_to_proto),
             head_commit_details: self.head_commit.as_ref().map(commit_details_to_proto),
             updated_statuses: self
                 .statuses_by_path
@@ -6059,6 +6064,7 @@ impl RepositorySnapshot {
                 .branch_list_error
                 .as_ref()
                 .map(|error| error.to_string()),
+            sequencer_state: self.sequencer_state.as_ref().map(sequencer_state_to_proto),
             head_commit_details: self.head_commit.as_ref().map(commit_details_to_proto),
             updated_statuses,
             removed_statuses,
@@ -6223,6 +6229,41 @@ pub fn proto_to_stash(entry: &proto::StashEntry) -> Result<StashEntry> {
         index: entry.index as usize,
         branch: entry.branch.clone(),
         timestamp: entry.timestamp,
+    })
+}
+
+fn sequencer_state_to_proto(state: &SequencerState) -> proto::SequencerState {
+    use proto::sequencer_state::Operation;
+    proto::SequencerState {
+        operation: match state.operation {
+            SequencerOperation::Merge => Operation::Merge,
+            SequencerOperation::Rebase => Operation::Rebase,
+            SequencerOperation::RebaseInteractive => Operation::RebaseInteractive,
+            SequencerOperation::CherryPick => Operation::CherryPick,
+            SequencerOperation::Revert => Operation::Revert,
+            SequencerOperation::Bisect => Operation::Bisect,
+        } as i32,
+        step: state.step,
+        total: state.total,
+        head_name: state.head_name.as_ref().map(|name| name.to_string()),
+    }
+}
+
+fn sequencer_state_from_proto(state: proto::SequencerState) -> Option<SequencerState> {
+    use proto::sequencer_state::Operation;
+    let operation = match Operation::from_i32(state.operation)? {
+        Operation::Merge => SequencerOperation::Merge,
+        Operation::Rebase => SequencerOperation::Rebase,
+        Operation::RebaseInteractive => SequencerOperation::RebaseInteractive,
+        Operation::CherryPick => SequencerOperation::CherryPick,
+        Operation::Revert => SequencerOperation::Revert,
+        Operation::Bisect => SequencerOperation::Bisect,
+    };
+    Some(SequencerState {
+        operation,
+        step: state.step,
+        total: state.total,
+        head_name: state.head_name.map(SharedString::from),
     })
 }
 
@@ -9818,6 +9859,7 @@ impl Repository {
             self.snapshot.merge.merge_heads_by_conflicted_path != new_merge_heads;
         self.snapshot.merge.merge_heads_by_conflicted_path = new_merge_heads;
         self.snapshot.merge.message = update.merge_message.map(SharedString::from);
+        self.snapshot.sequencer_state = update.sequencer_state.and_then(sequencer_state_from_proto);
         let new_stash_entries = GitStash {
             entries: update
                 .stash_entries
@@ -12258,13 +12300,14 @@ async fn compute_snapshot(
         (),
     );
 
-    let (merge_details, conflicts_changed) = cx
+    let (merge_details, conflicts_changed, sequencer_state) = cx
         .background_spawn({
             let backend = backend.clone();
             let mut merge_details = snapshot.merge.clone();
             async move {
                 let conflicts_changed = merge_details.update(&backend, conflicted_paths).await;
-                (merge_details, conflicts_changed)
+                let sequencer_state = backend.sequencer_state().await;
+                (merge_details, conflicts_changed, sequencer_state)
             }
         })
         .await;
@@ -12280,6 +12323,7 @@ async fn compute_snapshot(
 
         this.snapshot.scan_id += 1;
         this.snapshot.merge = merge_details;
+        this.snapshot.sequencer_state = sequencer_state;
         this.snapshot.statuses_by_path = statuses_by_path;
         this.snapshot.stash_entries = stash_entries;
 

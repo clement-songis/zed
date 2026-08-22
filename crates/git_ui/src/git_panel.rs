@@ -6659,6 +6659,46 @@ impl GitPanel {
         )
     }
 
+    /// A banner naming the multi-step git operation in progress.
+    ///
+    /// Without it, a repository stopped mid-rebase just looks like it has
+    /// mysterious conflicts and a detached HEAD; `git status` says why, and so
+    /// should the panel.
+    fn render_sequencer_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self
+            .active_repository
+            .as_ref()?
+            .read(cx)
+            .snapshot()
+            .sequencer_state?;
+
+        let mut label = state.operation.label().to_string();
+        if let (Some(step), Some(total)) = (state.step, state.total) {
+            label.push_str(&format!(" {step}/{total}"));
+        }
+        if let Some(head_name) = state.head_name.as_ref() {
+            label.push_str(&format!(" onto {head_name}"));
+        }
+
+        Some(
+            h_flex()
+                .w_full()
+                .px_2()
+                .py_1()
+                .gap_1p5()
+                .bg(cx.theme().status().info_background)
+                .border_b_1()
+                .border_color(cx.theme().colors().border)
+                .child(
+                    Icon::new(IconName::Warning)
+                        .size(IconSize::XSmall)
+                        .color(Color::Warning),
+                )
+                .child(Label::new(label).size(LabelSize::Small))
+                .into_any_element(),
+        )
+    }
+
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let active_tab = self.active_tab;
 
@@ -8750,6 +8790,7 @@ impl Render for GitPanel {
             .child(
                 v_flex()
                     .size_full()
+                    .children(self.render_sequencer_banner(cx))
                     .when(!self.commit_editor_expanded, |this| {
                         this.child(self.render_tab_bar(cx))
                     })
