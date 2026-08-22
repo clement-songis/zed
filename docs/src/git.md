@@ -67,6 +67,11 @@ All of the changes displayed in the Project Diff behave exactly the same as any 
 
 You can stage or unstage each hunk as well as a whole file by hitting the buttons on the tab bar or their corresponding keybindings.
 
+Each hunk carries a **Staged** checkbox showing which of three states it is in:
+unchecked when nothing of it is staged, checked when all of it is, and
+indeterminate when only part of it is. Clicking stages the rest, or unstages the
+whole hunk when it is already fully staged.
+
 ### Word Diff Highlighting
 
 By default, Zed highlights changed words within modified lines to make it easier to spot exactly what changed. To disable this globally, open the Settings Editor and go to **Languages & Tools > Miscellaneous**, then turn off **Word Diff Enabled**.
