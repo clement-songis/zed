@@ -1422,6 +1422,79 @@ impl GitStore {
     /// given uncommitted (HEAD-vs-worktree) diff, invoked from the uncommitted
     /// (gutter) controls. Uses the worktree->index projection (the hard part)
     /// because the acted-on hunks are HEAD-vs-worktree.
+    /// Stages only the worktree lines `rows` covers, leaving the rest of the
+    /// hunks they fall in unstaged.
+    ///
+    /// Separate from `stage_hunks` rather than a mode of it: that one stages
+    /// every hunk a range touches, and callers — the gutter controls, the
+    /// keyboard actions — depend on exactly that.
+    pub fn stage_lines(
+        &mut self,
+        buffer: Entity<Buffer>,
+        unstaged_diff: Entity<BufferDiff>,
+        rows: Vec<u32>,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let buffer_snapshot = buffer.read(cx).snapshot();
+        let buffer_id = buffer_snapshot.remote_id();
+        let unstaged_snapshot = unstaged_diff.read(cx).snapshot(cx);
+        let base_text = unstaged_snapshot.base_text();
+
+        let mut edits = Vec::new();
+        let mut footprints = Vec::new();
+        for hunk in unstaged_snapshot.raw_hunks_intersecting_range(
+            text::Anchor::min_for_buffer(buffer_id)..text::Anchor::max_for_buffer(buffer_id),
+            &buffer_snapshot,
+        ) {
+            let hunk_rows = hunk.buffer_range.to_point(&buffer_snapshot);
+            let selected: Vec<u32> = rows
+                .iter()
+                .filter(|row| (hunk_rows.start.row..=hunk_rows.end.row).contains(row))
+                .map(|row| row - hunk_rows.start.row)
+                .collect();
+            if selected.is_empty() {
+                continue;
+            }
+
+            // The hunk's own base range is too coarse to slice: a multi-line
+            // rewrite is a single edit, so the line correspondence has to be
+            // recovered inside it.
+            let worktree_text = buffer_snapshot
+                .text_for_range(hunk.buffer_range.to_offset(&buffer_snapshot))
+                .collect::<String>();
+            let base_slice = base_text
+                .text_for_range(hunk.diff_base_byte_range.clone())
+                .collect::<String>();
+            let staged = buffer_diff::stage_selected_lines(&base_slice, &worktree_text, &selected);
+
+            footprints.push(hunk.diff_base_byte_range.clone());
+            edits.push((
+                hunk.diff_base_byte_range.clone(),
+                Arc::from(staged.as_str()),
+            ));
+        }
+        if edits.is_empty() {
+            return Ok(());
+        }
+        edits.sort_by_key(|(range, _)| range.start);
+        drop(unstaged_snapshot);
+
+        let diff_state = self
+            .diffs
+            .get(&buffer_id)
+            .cloned()
+            .context("failed to find git state for buffer")?;
+        diff_state.update(cx, |diff_state, _| {
+            diff_state.remove_overlapping_pending_index_edits(&footprints);
+            diff_state.insert_pending_index_edits(Some(edits));
+        });
+        self.write_optimistic_index(buffer_id, cx);
+        Ok(())
+    }
+
     pub fn unstage_uncommitted_hunks(
         &mut self,
         buffer: Entity<Buffer>,
