@@ -241,6 +241,9 @@ To delete a tag, right-click the commit it points at in the Git Graph or in the 
 Zed confirms first: a deleted tag can only be recovered by someone who still knows the commit it pointed at.
 
 This deletes the local tag only; a tag already pushed to a remote stays there.
+### Pushing a Tag
+
+Creating a tag only creates it locally. To publish it, right-click the commit it points at and choose **Push Tag**. When the repository has several remotes, Zed asks which one to use; with a single remote it pushes there directly.
 
 ## Git Worktrees
 

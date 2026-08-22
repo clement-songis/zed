@@ -4824,6 +4824,8 @@ mod tests {
     async fn test_create_branch_from_commit_sha(cx: &mut TestAppContext) {
     async fn test_create_tag_lightweight_and_annotated(cx: &mut TestAppContext) {
     async fn test_delete_tag(cx: &mut TestAppContext) {
+    #[gpui::test]
+    async fn test_push_tag_refspec(cx: &mut TestAppContext) {
         disable_git_global_config();
         cx.executor().allow_parking();
 
@@ -4846,6 +4848,18 @@ mod tests {
 
         let repository = RealGitRepository::new(
             &repo_directory.join(".git"),
+        let (remote_directory, clone_directory) =
+            clone_remote_repository_with_main_and_feature(temp_dir.path());
+
+        git_command(&clone_directory, ["tag", "v1.0.0"]);
+        assert_eq!(
+            git_command_output(&remote_directory, ["tag", "-l"]),
+            "",
+            "the tag starts out local only"
+        );
+
+        let repository = RealGitRepository::new(
+            &clone_directory.join(".git"),
             None,
             Some("git".into()),
             cx.executor(),
@@ -4945,6 +4959,33 @@ mod tests {
     }
 
     #[gpui::test]
+        // Pushing a tag is pushing a ref, so the existing `push` carries it with
+        // an explicit refs/tags refspec — no separate git command is needed.
+        repository
+            .push(
+                "refs/tags/v1.0.0".to_string(),
+                "refs/tags/v1.0.0".to_string(),
+                "origin".to_string(),
+                None,
+                AskPassDelegate::new(&mut cx.to_async(), |_, _, _| {}),
+                Arc::new(test_commit_envs()),
+                cx.to_async(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git_command_output(&remote_directory, ["tag", "-l"]),
+            "v1.0.0",
+            "the tag should now exist on the remote"
+        );
+        assert_eq!(
+            git_command_output(&remote_directory, ["rev-parse", "v1.0.0^{commit}"]),
+            git_command_output(&clone_directory, ["rev-parse", "v1.0.0^{commit}"]),
+            "the pushed tag should point at the same commit"
+        );
+    }
+
     async fn test_change_branch_creates_local_tracking_branch_from_remote(cx: &mut TestAppContext) {
         disable_git_global_config();
         cx.executor().allow_parking();

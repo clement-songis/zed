@@ -4397,6 +4397,72 @@ impl GitPanel {
         }
     }
 
+    /// Pushes a tag to a remote.
+    ///
+    /// Pushing a tag is pushing a ref, so this reuses `push` with an explicit
+    /// `refs/tags/...` refspec rather than adding a separate git command: the
+    /// askpass, environment and remote-output handling are all the same.
+    pub fn push_tag(
+        &mut self,
+        tag_name: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.active_repository.clone() else {
+            return;
+        };
+        let askpass = self.askpass_delegate(format!("git push {tag_name}"), window, cx);
+        let workspace = self.workspace.clone();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let remotes = repo
+                .update(cx, |repo, _| repo.get_remotes(None, true))
+                .await??;
+            let remote = match remotes.len() {
+                0 => anyhow::bail!("No remotes to push to"),
+                1 => remotes.into_iter().next().context("remote disappeared")?,
+                _ => {
+                    let names = remotes.iter().map(|remote| remote.name.clone()).collect();
+                    let selection = cx
+                        .update(|window, cx| {
+                            picker_prompt::prompt(
+                                "Pick which remote to push the tag to",
+                                names,
+                                workspace,
+                                window,
+                                cx,
+                            )
+                        })?
+                        .await
+                        .context("cancelled")?;
+                    remotes
+                        .into_iter()
+                        .nth(selection)
+                        .context("remote disappeared")?
+                }
+            };
+
+            let refspec = format!("refs/tags/{tag_name}");
+            let output = repo
+                .update(cx, |repo, cx| {
+                    repo.push(
+                        refspec.clone().into(),
+                        refspec.into(),
+                        remote.name.clone(),
+                        None,
+                        askpass,
+                        cx,
+                    )
+                })
+                .await??;
+
+            this.update(cx, |this, cx| {
+                this.show_remote_output(RemoteAction::PushTag(tag_name, remote), output, cx);
+            })
+        })
+        .detach_and_log_err(cx);
+    }
+
     fn askpass_delegate(
         &self,
         operation: impl Into<SharedString>,
