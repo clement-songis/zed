@@ -517,6 +517,7 @@ impl EditorElement {
         register_action(editor, window, Editor::toggle_selected_diff_hunks);
         register_action(editor, window, Editor::toggle_staged_selected_diff_hunks);
         register_action(editor, window, Editor::stage_and_next);
+        register_action(editor, window, Editor::stage_selected_lines);
         register_action(editor, window, Editor::unstage_and_next);
         register_action(editor, window, Editor::expand_all_diff_hunks);
         register_action(editor, window, Editor::collapse_all_diff_hunks);
@@ -2480,6 +2481,63 @@ impl EditorElement {
                 })
                 .collect_vec()
         })
+    }
+
+    /// Lays out a staging checkbox on every changed line, inside the git strip.
+    ///
+    /// Only meaningful with `gutter.line_staging_checkboxes`, which is what
+    /// widens the strip enough to hold them.
+    fn layout_line_staging_checkboxes(
+        &self,
+        gutter: &Gutter,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<AnyElement> {
+        if self.split_side == Some(SplitSide::Left)
+            || !EditorSettings::get_global(cx)
+                .gutter
+                .line_staging_checkboxes
+        {
+            return Vec::new();
+        }
+
+        let mut elements = Vec::new();
+        for (index, row_info) in gutter.row_infos.iter().enumerate() {
+            let Some(status) = row_info.diff_status else {
+                continue;
+            };
+            // A deleted line has nothing in the worktree to stage.
+            if status.is_deleted() {
+                continue;
+            }
+            let (Some(buffer_id), Some(buffer_row)) = (row_info.buffer_id, row_info.buffer_row)
+            else {
+                continue;
+            };
+            let display_row = DisplayRow(gutter.range.start.0 + index as u32);
+            let staged = !status.has_secondary_hunk();
+            let element = self.editor.update(cx, |editor, cx| {
+                gutter.layout_staging_checkbox(
+                    display_row,
+                    |cx, window| {
+                        editor
+                            .render_line_staging_checkbox(
+                                buffer_id,
+                                buffer_row,
+                                display_row,
+                                staged,
+                                window,
+                                cx,
+                            )
+                            .into_any_element()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            elements.extend(element);
+        }
+        elements
     }
 
     fn layout_gutter_hover_button(
@@ -5319,8 +5377,14 @@ impl EditorElement {
         });
     }
 
-    fn gutter_strip_width(line_height: Pixels, cx: &App) -> Pixels {
-        match EditorSettings::get_global(cx).gutter.git_gutter_width {
+    pub(crate) fn gutter_strip_width(line_height: Pixels, cx: &App) -> Pixels {
+        let gutter = EditorSettings::get_global(cx).gutter;
+        // The checkboxes are drawn in the strip, so it has to be wide enough to
+        // hold one; the diff colour fills the same column behind them.
+        if gutter.line_staging_checkboxes {
+            return (0.9 * line_height).floor();
+        }
+        match gutter.git_gutter_width {
             GitGutterWidth::Custom(width) => px(*width),
             GitGutterWidth::Default => (0.275 * line_height).floor(),
         }
@@ -6721,10 +6785,54 @@ impl Gutter<'_> {
         Some(button)
     }
 
+    /// Same as [`Self::layout_item`], but placed inside the git strip rather
+    /// than beside it.
+    fn layout_staging_checkbox(
+        &self,
+        display_row: DisplayRow,
+        render_item: impl Fn(&mut Context<'_, Editor>, &mut Window) -> AnyElement,
+        window: &mut Window,
+        cx: &mut Context<'_, Editor>,
+    ) -> Option<AnyElement> {
+        if !self.range.contains(&display_row) {
+            return None;
+        }
+        let row = MultiBufferRow(
+            DisplayPoint::new(display_row, 0)
+                .to_point(self.snapshot)
+                .row,
+        );
+        if self.snapshot.is_line_folded(row) {
+            return None;
+        }
+        let blame_width = self.dimensions.git_blame_entries_width.unwrap_or_default();
+        Some(self.prepaint_button_at(
+            render_item(cx, window),
+            display_row,
+            blame_width,
+            window,
+            cx,
+        ))
+    }
+
     fn prepaint_button(
+        &self,
+        button: AnyElement,
+        row: DisplayRow,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let git_gutter_width = EditorElement::gutter_strip_width(self.line_height, cx)
+            + self.dimensions.git_blame_entries_width.unwrap_or_default();
+        self.prepaint_button_at(button, row, git_gutter_width + px(2.), window, cx)
+    }
+
+    /// Places a gutter element at `x`, measured from the gutter's left edge.
+    fn prepaint_button_at(
         &self,
         mut button: AnyElement,
         row: DisplayRow,
+        x: Pixels,
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
@@ -6733,10 +6841,6 @@ impl Gutter<'_> {
             AvailableSpace::Definite(self.line_height),
         );
         let indicator_size = button.layout_as_root(available_space, window, cx);
-        let git_gutter_width = EditorElement::gutter_strip_width(self.line_height, cx)
-            + self.dimensions.git_blame_entries_width.unwrap_or_default();
-
-        let x = git_gutter_width + px(2.);
 
         let mut y = Pixels::from(
             (row.as_f64() - self.scroll_position.y) * ScrollPixelOffset::from(self.line_height),
@@ -9160,6 +9264,8 @@ impl Element for EditorElement {
                             self.layout_gutter_hover_button(&gutter, position, row, window, cx),
                         );
                     }
+
+                    breakpoints.extend(self.layout_line_staging_checkboxes(&gutter, window, cx));
 
                     let git_gutter_width = Self::gutter_strip_width(line_height, cx)
                         + gutter_dimensions

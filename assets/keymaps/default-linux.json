@@ -191,6 +191,7 @@
       "ctrl-alt-y": "git::ToggleStaged",
       "alt-y": "git::StageAndNext",
       "alt-shift-y": "git::UnstageAndNext",
+      "ctrl-alt-shift-y": "git::StageSelectedLines",
     },
   },
   {

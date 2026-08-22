@@ -49,6 +49,9 @@ actions!(
         StageAndNext,
         /// Unstages the current hunk and moves to the next one.
         UnstageAndNext,
+        /// Stages only the lines the selection covers, leaving the rest of the
+        /// hunks they fall in unstaged.
+        StageSelectedLines,
         /// Restores the selected hunks to their original state.
         #[action(deprecated_aliases = ["editor::RevertSelectedHunks"])]
         Restore,

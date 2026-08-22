@@ -706,6 +706,9 @@
     // The width of the git diff hunk indicators in the gutter.
     // Use "default" to scale with font size, or {"custom": <pixels>} for a fixed width.
     "git_gutter_width": "default",
+    // Whether to show a checkbox on each changed line in the gutter, staging
+    // that line on its own. Widens the git gutter to make room for it.
+    "line_staging_checkboxes": false,
   },
   "indent_guides": {
     // Whether to show indent guides in the editor.

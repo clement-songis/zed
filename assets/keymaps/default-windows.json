@@ -190,6 +190,7 @@
       "ctrl-k ctrl-r": "git::Restore",
       "alt-y": "git::StageAndNext",
       "shift-alt-y": "git::UnstageAndNext",
+      "ctrl-shift-alt-y": "git::StageSelectedLines",
     },
   },
   {

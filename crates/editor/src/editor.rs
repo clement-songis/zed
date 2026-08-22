@@ -4560,6 +4560,73 @@ impl Editor {
             })
     }
 
+    /// The staging checkbox drawn on a changed line in the gutter.
+    ///
+    /// Clicking stages that line on its own, or unstages the hunk it belongs to
+    /// when it is already staged — unstaging a single line is the reverse
+    /// operation and is not offered.
+    fn render_line_staging_checkbox(
+        &self,
+        buffer_id: BufferId,
+        buffer_row: u32,
+        display_row: DisplayRow,
+        staged: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ui::Checkbox {
+        let state = if staged {
+            ui::ToggleState::Selected
+        } else {
+            ui::ToggleState::Unselected
+        };
+        ui::Checkbox::new(("stage-line", display_row.0), state).on_click(cx.listener(
+            move |editor, _state: &ui::ToggleState, _window, cx| {
+                let Some(project) = editor.project().cloned() else {
+                    return;
+                };
+
+                // Gathered before touching the project: the multibuffer read
+                // would otherwise still borrow `cx`.
+                let work = {
+                    let multibuffer = editor.buffer().read(cx);
+                    let buffer = multibuffer.buffer(buffer_id);
+                    let diff = multibuffer.diff_for(buffer_id);
+                    match (buffer, diff) {
+                        (Some(buffer), Some(diff)) => Some((buffer, diff)),
+                        _ => None,
+                    }
+                };
+                let Some((buffer, diff)) = work else {
+                    return;
+                };
+
+                if staged {
+                    // Unstaging one line is the reverse operation and is not
+                    // offered; unchecking gives back the whole hunk instead.
+                    let range = {
+                        let snapshot = buffer.read(cx).snapshot();
+                        let point = Point::new(buffer_row, 0);
+                        snapshot.anchor_before(point)..snapshot.anchor_after(point)
+                    };
+                    project
+                        .update(cx, |project, cx| {
+                            project.unstage_uncommitted_hunks(buffer, diff, vec![range], cx)
+                        })
+                        .log_err();
+                } else {
+                    let Some(unstaged_diff) = diff.read(cx).secondary_diff() else {
+                        return;
+                    };
+                    project
+                        .update(cx, |project, cx| {
+                            project.stage_lines(buffer, unstaged_diff, vec![buffer_row], cx)
+                        })
+                        .log_err();
+                }
+            },
+        ))
+    }
+
     fn render_gutter_hover_button(
         &self,
         position: Anchor,
@@ -11759,7 +11826,16 @@ impl EditorSnapshot {
 
             let is_singleton = self.buffer_snapshot().is_singleton();
 
+            // The staging checkboxes widen the git strip; without matching
+            // padding they would sit under the line numbers.
+            let line_staging_width = if gutter_settings.line_staging_checkboxes {
+                crate::element::EditorElement::gutter_strip_width(window.line_height(), cx)
+            } else {
+                Pixels::ZERO
+            };
+
             let left_padding = git_blame_entries_width.unwrap_or(Pixels::ZERO)
+                + line_staging_width
                 + if !is_singleton {
                     ch_width * 4.0
                 // runnables, breakpoints and bookmarks are shown in the same place

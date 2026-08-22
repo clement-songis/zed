@@ -1753,6 +1753,84 @@ impl Editor {
         .detach_and_log_err(cx);
     }
 
+    /// Stages only the lines the selection covers.
+    ///
+    /// `stage_lines` ignores rows that fall outside a hunk, so the whole
+    /// selection can be handed over as-is rather than intersected here.
+    pub(super) fn stage_selected_lines(
+        &mut self,
+        _: &::git::StageSelectedLines,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ranges: Vec<_> = self
+            .selections
+            .disjoint_anchors()
+            .iter()
+            .map(|s| s.range())
+            .collect();
+        let task = self.save_buffers_for_ranges_if_needed(&ranges, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            task.await?;
+            this.update_in(cx, |this, _window, cx| {
+                this.apply_stage_selected_lines(&ranges, cx);
+            })
+        })
+        .detach_and_log_err(cx);
+    }
+
+    fn apply_stage_selected_lines(&mut self, ranges: &[Range<Anchor>], cx: &mut Context<Self>) {
+        let Some(project) = self.project().cloned() else {
+            return;
+        };
+
+        // Everything the update needs is gathered first: holding the multibuffer
+        // borrow across `project.update` would borrow `cx` twice.
+        let mut work = Vec::new();
+        {
+            let multibuffer = self.buffer().read(cx);
+            let snapshot = multibuffer.snapshot(cx);
+            let mut rows_by_buffer: HashMap<BufferId, Vec<u32>> = HashMap::default();
+            for range in ranges {
+                for (buffer_snapshot, buffer_range, _) in
+                    snapshot.range_to_buffer_ranges(range.clone())
+                {
+                    let start = buffer_snapshot.offset_to_point(buffer_range.start.0).row;
+                    let end = buffer_snapshot.offset_to_point(buffer_range.end.0).row;
+                    rows_by_buffer
+                        .entry(buffer_snapshot.remote_id())
+                        .or_default()
+                        .extend(start..=end);
+                }
+            }
+
+            for (buffer_id, mut rows) in rows_by_buffer {
+                rows.sort_unstable();
+                rows.dedup();
+                let Some(buffer) = multibuffer.buffer(buffer_id) else {
+                    continue;
+                };
+                let Some(diff) = multibuffer.diff_for(buffer_id) else {
+                    continue;
+                };
+                // The unstaged diff is what the index is written from; the
+                // uncommitted one compares against HEAD instead.
+                let Some(unstaged_diff) = diff.read(cx).secondary_diff() else {
+                    continue;
+                };
+                work.push((buffer, unstaged_diff, rows));
+            }
+        }
+
+        for (buffer, unstaged_diff, rows) in work {
+            project
+                .update(cx, |project, cx| {
+                    project.stage_lines(buffer, unstaged_diff, rows, cx)
+                })
+                .log_err();
+        }
+    }
+
     pub(super) fn stage_and_next(
         &mut self,
         _: &::git::StageAndNext,

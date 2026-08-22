@@ -226,6 +226,7 @@
       "cmd-alt-y": "git::ToggleStaged",
       "cmd-y": "git::StageAndNext",
       "cmd-shift-y": "git::UnstageAndNext",
+      "cmd-alt-shift-y": "git::StageSelectedLines",
     },
   },
   {
