@@ -5,8 +5,9 @@ use ::git::{
     Oid, Restore, blame::BlameEntry, commit::ParsedCommitMessage, repository::RepoPath,
     status::FileStatus,
 };
-use buffer_diff::{BufferDiff, DiffHunkStatus, DiffHunkStatusKind};
+use buffer_diff::{BufferDiff, DiffHunkSecondaryStatus, DiffHunkStatus, DiffHunkStatusKind};
 use project::git_store::Repository;
+use ui::Checkbox;
 
 #[derive(Clone)]
 pub struct ResolvedDiffHunk {
@@ -3180,14 +3181,28 @@ pub fn render_diff_hunk_controls(
         .block_mouse_except_scroll()
         .shadow_md()
         .when(show_stage_restore, |el| {
-            el.child(if status.has_secondary_hunk() {
-                Button::new(("stage", row as u64), "Stage")
-                    .alpha(if status.is_pending() { 0.66 } else { 1.0 })
+            // A hunk is staged, unstaged, or — once part of it can be staged on
+            // its own — partly staged. A checkbox says which of the three it is
+            // in one glance, where a Stage/Unstage button only ever says what
+            // the next click does.
+            let toggle_state = match status.secondary {
+                DiffHunkSecondaryStatus::NoSecondaryHunk
+                | DiffHunkSecondaryStatus::SecondaryHunkRemovalPending => ToggleState::Selected,
+                DiffHunkSecondaryStatus::OverlapsWithSecondaryHunk => ToggleState::Indeterminate,
+                DiffHunkSecondaryStatus::HasSecondaryHunk
+                | DiffHunkSecondaryStatus::SecondaryHunkAdditionPending => ToggleState::Unselected,
+            };
+            // Partly staged counts as not staged: clicking stages the rest.
+            let stage = status.has_secondary_hunk();
+            el.child(
+                Checkbox::new(("stage", row as u64), toggle_state)
+                    .label("Staged")
+                    .disabled(status.is_pending())
                     .tooltip({
                         let focus_handle = editor.focus_handle(cx);
                         move |_window, cx| {
                             Tooltip::for_action_in(
-                                "Stage Hunk",
+                                if stage { "Stage Hunk" } else { "Unstage Hunk" },
                                 &::git::ToggleStaged,
                                 &focus_handle,
                                 cx,
@@ -3196,45 +3211,19 @@ pub fn render_diff_hunk_controls(
                     })
                     .on_click({
                         let editor = editor.clone();
+                        let hunk_range = hunk_range.clone();
                         move |_event, window, cx| {
                             editor.update(cx, |editor, cx| {
                                 editor.stage_or_unstage_diff_hunks(
-                                    true,
+                                    stage,
                                     vec![hunk_range.start..hunk_range.start],
                                     window,
                                     cx,
                                 );
                             });
                         }
-                    })
-            } else {
-                Button::new(("unstage", row as u64), "Unstage")
-                    .alpha(if status.is_pending() { 0.66 } else { 1.0 })
-                    .tooltip({
-                        let focus_handle = editor.focus_handle(cx);
-                        move |_window, cx| {
-                            Tooltip::for_action_in(
-                                "Unstage Hunk",
-                                &::git::ToggleStaged,
-                                &focus_handle,
-                                cx,
-                            )
-                        }
-                    })
-                    .on_click({
-                        let editor = editor.clone();
-                        move |_event, window, cx| {
-                            editor.update(cx, |editor, cx| {
-                                editor.stage_or_unstage_diff_hunks(
-                                    false,
-                                    vec![hunk_range.start..hunk_range.start],
-                                    window,
-                                    cx,
-                                );
-                            });
-                        }
-                    })
-            })
+                    }),
+            )
         })
         .when(show_stage_restore, |el| {
             el.child(
