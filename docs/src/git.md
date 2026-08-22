@@ -251,6 +251,12 @@ Click a button to resolve that conflict. The conflict markers are removed and re
 
 > **Tip:** For complex conflicts that need manual editing, you can edit the file directly. Remove the conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) and keep the content you want.
 
+## Patches
+
+{#action git::CopyPatch} copies the uncommitted changes to the clipboard as a patch, and {#action git::ApplyPatchFromClipboard} applies one to the working tree.
+
+Applying checks the patch first. `git apply` is not atomic across files, so a patch that fails partway would otherwise leave some files changed and others untouched; Zed reports the problem instead and changes nothing.
+
 ## Stashing
 
 Git stash allows you to temporarily save your uncommitted changes and revert your working directory to a clean state. This is particularly useful when you need to quickly switch branches or pull updates without committing incomplete work.

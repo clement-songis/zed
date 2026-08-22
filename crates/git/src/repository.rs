@@ -818,6 +818,12 @@ pub trait GitRepository: Send + Sync {
     -> BoxFuture<'_, Result<()>>;
     fn rename_branch(&self, branch: String, new_name: String) -> BoxFuture<'_, Result<()>>;
 
+    /// Applies a patch to the working tree.
+    ///
+    /// `check_only` runs `--check`, reporting whether it would apply without
+    /// touching anything.
+    fn apply_patch(&self, patch: String, check_only: bool) -> BoxFuture<'_, Result<()>>;
+
     fn delete_branch(
         &self,
         is_remote: bool,
@@ -2416,6 +2422,45 @@ impl GitRepository for RealGitRepository {
             .spawn(async move {
                 let git = git?;
                 crate::blame::Blame::for_path_at_revision(&git, &path, revision).await
+            })
+            .boxed()
+    }
+
+    fn apply_patch(&self, patch: String, check_only: bool) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary_in_worktree();
+
+        self.executor
+            .spawn(async move {
+                let git_binary = git_binary?;
+                let mut args = vec!["apply"];
+                if check_only {
+                    args.push("--check");
+                }
+                // The patch arrives on stdin rather than through a file: it may
+                // come from the clipboard, and writing it out first would leave
+                // a temporary file behind on every failure path.
+                args.push("-");
+
+                let mut command = git_binary.build_command(&args);
+                command
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                let mut child = command.spawn()?;
+                child
+                    .stdin
+                    .take()
+                    .context("failed to open stdin for git apply")?
+                    .write_all(patch.as_bytes())
+                    .await?;
+
+                let output = child.output().await?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "Failed to apply patch:\n{}",
+                    String::from_utf8_lossy(&output.stderr),
+                );
+                anyhow::Ok(())
             })
             .boxed()
     }
@@ -4759,6 +4804,67 @@ mod tests {
                 .unwrap(),
             "true"
         );
+    }
+
+    #[gpui::test]
+    async fn test_apply_patch(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("file.txt"), "one\ntwo\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "base"]);
+
+        // Produce a real patch by changing the file and asking git for the diff.
+        fs::write(repo_directory.join("file.txt"), "one\nTWO\n").unwrap();
+        let patch = git_command_output(&repo_directory, ["diff"]);
+        git_command(&repo_directory, ["checkout", "--", "file.txt"]);
+        assert_eq!(
+            fs::read_to_string(repo_directory.join("file.txt")).unwrap(),
+            "one\ntwo\n"
+        );
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+
+        // `--check` must not touch the working tree.
+        repository
+            .apply_patch(format!("{patch}\n"), true)
+            .await
+            .expect("the patch should apply cleanly");
+        assert_eq!(
+            fs::read_to_string(repo_directory.join("file.txt")).unwrap(),
+            "one\ntwo\n",
+            "checking a patch must leave the working tree alone"
+        );
+
+        repository
+            .apply_patch(format!("{patch}\n"), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(repo_directory.join("file.txt")).unwrap(),
+            "one\nTWO\n"
+        );
+
+        // Applying it twice must fail rather than silently doing nothing: the
+        // context no longer matches.
+        assert!(
+            repository
+                .apply_patch(format!("{patch}\n"), true)
+                .await
+                .is_err()
+        );
+        assert!(repository.apply_patch(String::new(), true).await.is_err());
     }
 
     #[gpui::test]

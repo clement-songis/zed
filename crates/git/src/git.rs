@@ -139,6 +139,10 @@ actions!(
         AddToGitInfoExclude,
         /// Copies the current branch name to the clipboard.
         CopyBranchName,
+        /// Copies the uncommitted changes as a patch.
+        CopyPatch,
+        /// Applies a patch from the clipboard to the working tree.
+        ApplyPatchFromClipboard,
     ]
 );
 
