@@ -508,21 +508,20 @@ message Envelope {
     RefreshDocumentSymbols refresh_document_symbols = 477;
     BlameBufferAtRevision blame_buffer_at_revision = 478;
     BlameBufferAtRevisionResponse blame_buffer_at_revision_response = 479;
-    GitCreateTag git_create_tag = 480; // current max
-    GitDeleteTag git_delete_tag = 480; // current max
-    GitCheckoutTag git_checkout_tag = 480;  // current max
-    GitSequencerAbort git_sequencer_abort = 480;  // current max
-    GitSequencerAbort git_sequencer_abort = 480;
-    GitSequencerAdvance git_sequencer_advance = 481;
-    GitMerge git_merge = 482;
-    GitMergeResponse git_merge_response = 483;
-    GitRebase git_rebase = 484;
-    GitRebaseResponse git_rebase_response = 485;
-    GitCherryPick git_cherry_pick = 486;
-    GitCherryPickResponse git_cherry_pick_response = 487;
-    GitRevert git_revert = 488;
-    GitRevertResponse git_revert_response = 489;  // current max
-    GitApplyPatch git_apply_patch = 480;  // current max
+    GitCreateTag git_create_tag = 480;
+    GitDeleteTag git_delete_tag = 481;
+    GitCheckoutTag git_checkout_tag = 482;
+    GitSequencerAbort git_sequencer_abort = 483;
+    GitSequencerAdvance git_sequencer_advance = 484;
+    GitMerge git_merge = 485;
+    GitMergeResponse git_merge_response = 486;
+    GitRebase git_rebase = 487;
+    GitRebaseResponse git_rebase_response = 488;
+    GitCherryPick git_cherry_pick = 489;
+    GitCherryPickResponse git_cherry_pick_response = 490;
+    GitRevert git_revert = 491;
+    GitRevertResponse git_revert_response = 492;
+    GitApplyPatch git_apply_patch = 493; // current max
   }
 
   reserved 87 to 88;

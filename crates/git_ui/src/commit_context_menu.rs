@@ -42,6 +42,19 @@ pub(crate) enum CommitContextMenuSource {
 /// that a network operation needs.
 fn push_tag(
     tag_name: SharedString,
+    workspace: &WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    workspace
+        .update(cx, |workspace, cx| {
+            if let Some(panel) = workspace.panel::<crate::git_panel::GitPanel>(cx) {
+                panel.update(cx, |panel, cx| panel.push_tag(tag_name, window, cx));
+            }
+        })
+        .ok();
+}
+
 /// Opens the branch diff with this commit as the base.
 ///
 /// For a commit on the current branch the merge base is the commit itself, so
@@ -55,9 +68,6 @@ fn compare_with_working_tree(
 ) {
     workspace
         .update(cx, |workspace, cx| {
-            if let Some(panel) = workspace.panel::<crate::git_panel::GitPanel>(cx) {
-                panel.update(cx, |panel, cx| panel.push_tag(tag_name, window, cx));
-            }
             let project = workspace.project().clone();
             let Some(repository) = project.read(cx).active_repository(cx) else {
                 return;
@@ -113,6 +123,67 @@ pub(crate) fn commit_context_menu(
                     );
                 }
             })
+            .entry("Compare with Working Tree", None, {
+                let workspace = workspace.clone();
+                move |window, cx| {
+                    compare_with_working_tree(
+                        SharedString::from(sha.to_string()),
+                        &workspace,
+                        window,
+                        cx,
+                    );
+                }
+            })
+            .entry("Cherry-Pick", None, {
+                let repository = repository.clone();
+                let workspace = workspace.clone();
+                move |_window, cx| {
+                    crate::apply_commit(
+                        SharedString::from(sha.to_string()),
+                        false,
+                        repository.clone(),
+                        workspace.clone(),
+                        cx,
+                    );
+                }
+            })
+            .entry("Revert", None, {
+                let repository = repository.clone();
+                let workspace = workspace.clone();
+                move |_window, cx| {
+                    crate::apply_commit(
+                        SharedString::from(sha.to_string()),
+                        true,
+                        repository.clone(),
+                        workspace.clone(),
+                        cx,
+                    );
+                }
+            })
+            .submenu("Reset to Here", {
+                let repository = repository.clone();
+                move |menu, _window, _cx| {
+                    let mut menu = menu;
+                    for (label, mode) in [
+                        ("Soft — keep changes staged", ResetMode::Soft),
+                        ("Mixed — keep changes unstaged", ResetMode::Mixed),
+                        ("Keep — refuse if it would overwrite", ResetMode::Keep),
+                        ("Hard — discard changes", ResetMode::Hard),
+                    ] {
+                        let repository = repository.clone();
+                        menu = menu.entry(label, None, move |window, cx| {
+                            crate::reset_to_commit(
+                                SharedString::from(sha.to_string()),
+                                mode,
+                                repository.clone(),
+                                window,
+                                cx,
+                            );
+                        });
+                    }
+                    menu
+                }
+            })
             .entry("New Tag…", Some(CreateTag.boxed_clone()), {
                 let repository = repository.clone();
                 let workspace = workspace.clone();
@@ -128,15 +199,6 @@ pub(crate) fn commit_context_menu(
                         repository,
                         workspace.clone(),
                         window,
-            .entry("Cherry-Pick", None, {
-                let repository = repository.clone();
-                let workspace = workspace.clone();
-                move |_window, cx| {
-                    crate::apply_commit(
-                        SharedString::from(sha.to_string()),
-                        false,
-                        repository.clone(),
-                        workspace.clone(),
                         cx,
                     );
                 }
@@ -169,48 +231,6 @@ pub(crate) fn commit_context_menu(
                     }
                 },
             )
-            .submenu("Reset to Here", {
-                let repository = repository.clone();
-                move |menu, _window, _cx| {
-                    let mut menu = menu;
-                    for (label, mode) in [
-                        ("Soft — keep changes staged", ResetMode::Soft),
-                        ("Mixed — keep changes unstaged", ResetMode::Mixed),
-                        ("Keep — refuse if it would overwrite", ResetMode::Keep),
-                        ("Hard — discard changes", ResetMode::Hard),
-                    ] {
-                        let repository = repository.clone();
-                        menu = menu.entry(label, None, move |window, cx| {
-                            crate::reset_to_commit(
-                                SharedString::from(sha.to_string()),
-                                mode,
-                                repository.clone(),
-                                window,
-                                cx,
-                            );
-                        });
-                    }
-                    menu
-            .entry("Revert", None, {
-                let repository = repository.clone();
-                let workspace = workspace.clone();
-                move |_window, cx| {
-                    crate::apply_commit(
-                        SharedString::from(sha.to_string()),
-                        true,
-                        repository.clone(),
-                        workspace.clone(),
-            .entry("Compare with Working Tree", None, {
-                let workspace = workspace.clone();
-                move |window, cx| {
-                    compare_with_working_tree(
-                        SharedString::from(sha.to_string()),
-                        &workspace,
-                        window,
-                        cx,
-                    );
-                }
-            })
             .entry(
                 "Copy SHA",
                 Some(CopyCommitSha.boxed_clone()),
@@ -267,20 +287,11 @@ pub(crate) fn commit_context_menu(
                 menu.map(|menu| {
                     let tag_names = commit.tag_names.clone();
                     let repository = repository.clone();
-                    let delete_tag_label = "Delete Tag";
-                    let workspace = workspace.clone();
-                    let push_tag_label = "Push Tag";
                     let checkout_tag_label = "Check Out Tag";
 
                     match tag_names.as_slice() {
                         [tag_name] => {
                             let tag_name = tag_name.clone();
-                            let label = format!("{delete_tag_label}: {tag_name}");
-                            menu.entry(label, None, move |window, cx| {
-                                crate::delete_tag(tag_name.clone(), repository.clone(), window, cx);
-                            })
-                        }
-                        _ => menu.submenu(delete_tag_label, move |menu, _window, _cx| {
                             let label = format!("{checkout_tag_label}: {tag_name}");
                             menu.entry(label, None, move |window, cx| {
                                 crate::checkout_tag(
@@ -297,13 +308,28 @@ pub(crate) fn commit_context_menu(
                             for tag_name in tag_names.clone() {
                                 let repository = repository.clone();
                                 menu = menu.entry(tag_name.clone(), None, move |window, cx| {
-                                    crate::delete_tag(
                                     crate::checkout_tag(
                                         tag_name.clone(),
                                         repository.clone(),
                                         window,
                                         cx,
                                     );
+                                });
+                            }
+                            menu
+                        }),
+                    }
+                })
+            })
+            .when(ref_name.is_none() && !commit.tag_names.is_empty(), |menu| {
+                menu.map(|menu| {
+                    let tag_names = commit.tag_names.clone();
+                    let workspace = workspace.clone();
+                    let push_tag_label = "Push Tag";
+
+                    match tag_names.as_slice() {
+                        [tag_name] => {
+                            let tag_name = tag_name.clone();
                             let label = format!("{push_tag_label}: {tag_name}");
                             menu.entry(label, None, move |window, cx| {
                                 push_tag(tag_name.clone(), &workspace, window, cx);
@@ -316,6 +342,39 @@ pub(crate) fn commit_context_menu(
                                 let workspace = workspace.clone();
                                 menu = menu.entry(tag_name.clone(), None, move |window, cx| {
                                     push_tag(tag_name.clone(), &workspace, window, cx);
+                                });
+                            }
+                            menu
+                        }),
+                    }
+                })
+            })
+            .when(ref_name.is_none() && !commit.tag_names.is_empty(), |menu| {
+                menu.map(|menu| {
+                    let tag_names = commit.tag_names.clone();
+                    let repository = repository.clone();
+                    let delete_tag_label = "Delete Tag";
+
+                    match tag_names.as_slice() {
+                        [tag_name] => {
+                            let tag_name = tag_name.clone();
+                            let label = format!("{delete_tag_label}: {tag_name}");
+                            menu.entry(label, None, move |window, cx| {
+                                crate::delete_tag(tag_name.clone(), repository.clone(), window, cx);
+                            })
+                        }
+                        _ => menu.submenu(delete_tag_label, move |menu, _window, _cx| {
+                            let mut menu = menu.fixed_width(COMMIT_TAG_LIST_WIDTH_IN_REMS.into());
+
+                            for tag_name in tag_names.clone() {
+                                let repository = repository.clone();
+                                menu = menu.entry(tag_name.clone(), None, move |window, cx| {
+                                    crate::delete_tag(
+                                        tag_name.clone(),
+                                        repository.clone(),
+                                        window,
+                                        cx,
+                                    );
                                 });
                             }
                             menu

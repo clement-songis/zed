@@ -958,8 +958,8 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_merge);
         client.add_entity_request_handler(Self::handle_rebase);
         client.add_entity_request_handler(Self::handle_cherry_pick);
-        client.add_entity_request_handler(Self::handle_revert);
         client.add_entity_request_handler(Self::handle_apply_patch);
+        client.add_entity_request_handler(Self::handle_revert);
         client.add_entity_request_handler(Self::handle_rename_branch);
         client.add_entity_request_handler(Self::handle_create_remote);
         client.add_entity_request_handler(Self::handle_remove_remote);
@@ -4226,12 +4226,59 @@ impl GitStore {
     async fn handle_create_tag(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::GitCreateTag>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let tag_name = envelope.payload.tag_name;
+        let commit = envelope.payload.commit;
+        let message = envelope.payload.message;
+
+        repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.create_tag(tag_name, commit, message)
+            })
+            .await??;
+
+        Ok(proto::Ack {})
+    }
+
     async fn handle_delete_tag(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::GitDeleteTag>,
-    async fn handle_checkout_tag(
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let tag_name = envelope.payload.tag_name;
+
+        repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.delete_tag(tag_name)
+            })
+            .await??;
+
+        Ok(proto::Ack {})
+    }
+
+    async fn handle_apply_patch(
         this: Entity<Self>,
-        envelope: TypedEnvelope<proto::GitCheckoutTag>,
+        envelope: TypedEnvelope<proto::GitApplyPatch>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let payload = envelope.payload;
+
+        repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.apply_patch(payload.patch, payload.check_only)
+            })
+            .await??;
+
+        Ok(proto::Ack {})
+    }
+
     async fn handle_cherry_pick(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::GitCherryPick>,
@@ -4321,9 +4368,6 @@ impl GitStore {
     async fn handle_sequencer_advance(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::GitSequencerAdvance>,
-    async fn handle_apply_patch(
-        this: Entity<Self>,
-        envelope: TypedEnvelope<proto::GitApplyPatch>,
         mut cx: AsyncApp,
     ) -> Result<proto::Ack> {
         let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
@@ -4354,21 +4398,6 @@ impl GitStore {
     ) -> Result<proto::Ack> {
         let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
         let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
-        let tag_name = envelope.payload.tag_name;
-        let commit = envelope.payload.commit;
-        let message = envelope.payload.message;
-
-        repository_handle
-            .update(&mut cx, |repository_handle, _| {
-                repository_handle.create_tag(tag_name, commit, message)
-
-        repository_handle
-            .update(&mut cx, |repository_handle, _| {
-                repository_handle.delete_tag(tag_name)
-
-        repository_handle
-            .update(&mut cx, |repository_handle, _| {
-                repository_handle.checkout_tag(tag_name)
         let operation = proto::sequencer_state::Operation::from_i32(envelope.payload.operation)
             .map(sequencer_operation_from_proto)
             .context("unknown sequencer operation")?;
@@ -4376,11 +4405,24 @@ impl GitStore {
         repository_handle
             .update(&mut cx, |repository_handle, _| {
                 repository_handle.sequencer_abort(operation)
-        let payload = envelope.payload;
+            })
+            .await??;
+
+        Ok(proto::Ack {})
+    }
+
+    async fn handle_checkout_tag(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitCheckoutTag>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let tag_name = envelope.payload.tag_name;
 
         repository_handle
             .update(&mut cx, |repository_handle, _| {
-                repository_handle.apply_patch(payload.patch, payload.check_only)
+                repository_handle.checkout_tag(tag_name)
             })
             .await??;
 
@@ -9850,6 +9892,91 @@ impl Repository {
         self.send_job(
             "create_tag",
             Some(status_msg),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => {
+                        backend
+                            .create_tag(tag_name, commit, message, environment)
+                            .await
+                    }
+                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                        client
+                            .request(proto::GitCreateTag {
+                                project_id: project_id.0,
+                                repository_id: id.to_proto(),
+                                tag_name,
+                                commit,
+                                message,
+                            })
+                            .await?;
+
+                        Ok(())
+                    }
+                }
+            },
+        )
+    }
+
+    pub fn delete_tag(&mut self, tag_name: String) -> oneshot::Receiver<Result<()>> {
+        let id = self.id;
+        self.send_job(
+            "delete_tag",
+            Some(format!("git tag -d {tag_name}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.delete_tag(tag_name).await
+                    }
+                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                        client
+                            .request(proto::GitDeleteTag {
+                                project_id: project_id.0,
+                                repository_id: id.to_proto(),
+                                tag_name,
+                            })
+                            .await?;
+
+                        Ok(())
+                    }
+                }
+            },
+        )
+    }
+
+    pub fn apply_patch(
+        &mut self,
+        patch: String,
+        check_only: bool,
+    ) -> oneshot::Receiver<Result<()>> {
+        let id = self.id;
+        self.send_job(
+            "apply_patch",
+            Some("git apply".into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.apply_patch(patch, check_only).await
+                    }
+                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                        client
+                            .request(proto::GitApplyPatch {
+                                project_id: project_id.0,
+                                repository_id: id.to_proto(),
+                                patch,
+                                check_only,
+                            })
+                            .await?;
+                        Ok(())
+                    }
+                }
+            },
+        )
+    }
+
     pub fn cherry_pick(
         &mut self,
         commits: Vec<String>,
@@ -10026,47 +10153,11 @@ impl Repository {
                         ..
                     }) => {
                         backend
-                            .create_tag(tag_name, commit, message, environment)
                             .sequencer_advance(operation, step, environment)
                             .await
                     }
                     RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
                         client
-                            .request(proto::GitCreateTag {
-                                project_id: project_id.0,
-                                repository_id: id.to_proto(),
-                                tag_name,
-                                commit,
-                                message,
-    pub fn delete_tag(&mut self, tag_name: String) -> oneshot::Receiver<Result<()>> {
-        let id = self.id;
-        self.send_job(
-            "delete_tag",
-            Some(format!("git tag -d {tag_name}").into()),
-            move |repo, _cx| async move {
-                match repo {
-                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
-                        backend.delete_tag(tag_name).await
-                    }
-                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
-                        client
-                            .request(proto::GitDeleteTag {
-    pub fn checkout_tag(&mut self, tag_name: String) -> oneshot::Receiver<Result<()>> {
-        let id = self.id;
-        self.send_job(
-            "checkout_tag",
-            Some(format!("git checkout --detach refs/tags/{tag_name}").into()),
-            move |repo, _cx| async move {
-                match repo {
-                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
-                        backend.checkout_tag(tag_name).await
-                    }
-                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
-                        client
-                            .request(proto::GitCheckoutTag {
-                                project_id: project_id.0,
-                                repository_id: id.to_proto(),
-                                tag_name,
                             .request(proto::GitSequencerAdvance {
                                 project_id: project_id.0,
                                 repository_id: id.to_proto(),
@@ -10111,29 +10202,32 @@ impl Repository {
                             })
                             .await?;
 
-    pub fn apply_patch(
-        &mut self,
-        patch: String,
-        check_only: bool,
-    ) -> oneshot::Receiver<Result<()>> {
+                        Ok(())
+                    }
+                }
+            },
+        )
+    }
+
+    pub fn checkout_tag(&mut self, tag_name: String) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
         self.send_job(
-            "apply_patch",
-            Some("git apply".into()),
+            "checkout_tag",
+            Some(format!("git checkout --detach refs/tags/{tag_name}").into()),
             move |repo, _cx| async move {
                 match repo {
                     RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
-                        backend.apply_patch(patch, check_only).await
+                        backend.checkout_tag(tag_name).await
                     }
                     RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
                         client
-                            .request(proto::GitApplyPatch {
+                            .request(proto::GitCheckoutTag {
                                 project_id: project_id.0,
                                 repository_id: id.to_proto(),
-                                patch,
-                                check_only,
+                                tag_name,
                             })
                             .await?;
+
                         Ok(())
                     }
                 }

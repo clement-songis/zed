@@ -5680,19 +5680,6 @@ impl GitPanel {
         show_error_toast(workspace, action, e, cx)
     }
 
-    fn show_info_toast(&self, message: String, cx: &mut App) {
-        let Some(workspace) = self.workspace.upgrade() else {
-            return;
-        };
-        workspace.update(cx, |workspace, cx| {
-            struct GitInfoToast;
-            workspace.show_toast(
-                workspace::Toast::new(NotificationId::unique::<GitInfoToast>(), message).autohide(),
-                cx,
-            );
-        });
-    }
-
     fn show_git_job_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(repo) = self.active_repository.as_ref() else {
             let workspace = self.workspace.clone();

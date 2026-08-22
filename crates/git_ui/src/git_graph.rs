@@ -1,7 +1,6 @@
 pub use crate::commit_context_menu::{
-    CopyCommitSha, CopyCommitTag, CreateBranchFromCommit, OpenCommitView,
+    CopyCommitSha, CopyCommitTag, CreateBranchFromCommit, CreateTag, OpenCommitView,
 };
-pub use crate::commit_context_menu::{CopyCommitSha, CopyCommitTag, CreateTag, OpenCommitView};
 use crate::{
     commit_context_menu::{CommitContextMenuData, CommitContextMenuSource, commit_context_menu},
     commit_tooltip::CommitAvatar,
@@ -2510,9 +2509,6 @@ impl GitGraph {
         cx.write_to_clipboard(ClipboardItem::new_string(commit.data.sha.to_string()));
     }
 
-    fn create_branch_from_selected_commit(
-        &mut self,
-        _: &CreateBranchFromCommit,
     fn create_tag_at_selected_commit(
         &mut self,
         _: &CreateTag,
@@ -2528,8 +2524,31 @@ impl GitGraph {
         let Some(repository) = self.get_repository(cx) else {
             return;
         };
-        crate::create_branch_from_commit(
         crate::create_tag_at_commit(
+            SharedString::from(commit.data.sha.to_string()),
+            repository,
+            self.workspace.clone(),
+            window,
+            cx,
+        );
+    }
+
+    fn create_branch_from_selected_commit(
+        &mut self,
+        _: &CreateBranchFromCommit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(selected_entry_index) = self.selected_entry_idx else {
+            return;
+        };
+        let Some(commit) = self.graph_data.commits.get(selected_entry_index) else {
+            return;
+        };
+        let Some(repository) = self.get_repository(cx) else {
+            return;
+        };
+        crate::create_branch_from_commit(
             SharedString::from(commit.data.sha.to_string()),
             repository,
             self.workspace.clone(),
@@ -4232,8 +4251,8 @@ impl Render for GitGraph {
             .on_action(cx.listener(|this, _: &OpenCommitView, window, cx| {
                 this.open_selected_commit_view(window, cx);
             }))
-            .on_action(cx.listener(Self::create_branch_from_selected_commit))
             .on_action(cx.listener(Self::create_tag_at_selected_commit))
+            .on_action(cx.listener(Self::create_branch_from_selected_commit))
             .on_action(cx.listener(Self::copy_selected_commit_sha))
             .on_action(cx.listener(Self::copy_selected_commit_tag))
             .on_action(cx.listener(Self::cancel))
@@ -4891,27 +4910,6 @@ fn generate_parents_from_oids(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn test_authored_by_local_user() {
-        use super::authored_by_local_user;
-
-        assert!(authored_by_local_user(
-            Some("me@example.com"),
-            "me@example.com"
-        ));
-        assert!(
-            authored_by_local_user(Some("me@example.com"), "Me@Example.COM"),
-            "the same address in a different case is still the same author"
-        );
-        assert!(!authored_by_local_user(
-            Some("me@example.com"),
-            "someone-else@example.com"
-        ));
-
-        // An unresolved identity must not highlight anything, and a commit with
-        // no recorded author must not be attributed to the local user.
-        assert!(!authored_by_local_user(None, "me@example.com"));
-        assert!(!authored_by_local_user(None, ""));
-        assert!(!authored_by_local_user(Some("me@example.com"), ""));
     fn test_parse_search_query() {
         use super::parse_search_query;
 
@@ -4942,6 +4940,30 @@ mod tests {
         let args = parse_search_query("git_ui: add a thing", false);
         assert_eq!(args.query.as_ref(), "git_ui: add a thing");
         assert_eq!(args.author, None);
+    }
+
+    #[test]
+    fn test_authored_by_local_user() {
+        use super::authored_by_local_user;
+
+        assert!(authored_by_local_user(
+            Some("me@example.com"),
+            "me@example.com"
+        ));
+        assert!(
+            authored_by_local_user(Some("me@example.com"), "Me@Example.COM"),
+            "the same address in a different case is still the same author"
+        );
+        assert!(!authored_by_local_user(
+            Some("me@example.com"),
+            "someone-else@example.com"
+        ));
+
+        // An unresolved identity must not highlight anything, and a commit with
+        // no recorded author must not be attributed to the local user.
+        assert!(!authored_by_local_user(None, "me@example.com"));
+        assert!(!authored_by_local_user(None, ""));
+        assert!(!authored_by_local_user(Some("me@example.com"), ""));
     }
 
     use super::*;

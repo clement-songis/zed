@@ -927,16 +927,25 @@ pub trait GitRepository: Send + Sync {
         message: Option<String>,
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>>;
+
     /// Deletes a local tag. Fails if no such tag exists.
     fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>>;
+
     /// Checks out a tag, leaving HEAD detached at the commit it points to.
     fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>>;
+
     /// Reports the multi-step operation the repository is in the middle of, if
     /// any, so the UI can say why the repository looks the way it does.
     fn sequencer_state(&self) -> BoxFuture<'_, Option<SequencerState>>;
 
     /// Reads the three sides git records in the index for an unmerged path.
     fn load_unmerged_stages(&self, path: RepoPath) -> BoxFuture<'_, UnmergedStages>;
+
+    /// Applies a patch to the working tree.
+    ///
+    /// `check_only` runs `--check`, reporting whether it would apply without
+    /// touching anything.
+    fn apply_patch(&self, patch: String, check_only: bool) -> BoxFuture<'_, Result<()>>;
 
     /// Applies `commits` on top of the current branch.
     ///
@@ -995,11 +1004,6 @@ pub trait GitRepository: Send + Sync {
         step: SequencerAdvance,
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>>;
-    /// Applies a patch to the working tree.
-    ///
-    /// `check_only` runs `--check`, reporting whether it would apply without
-    /// touching anything.
-    fn apply_patch(&self, patch: String, check_only: bool) -> BoxFuture<'_, Result<()>>;
 
     fn delete_branch(
         &self,
@@ -2563,8 +2567,40 @@ impl GitRepository for RealGitRepository {
         message: Option<String>,
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
-    fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
-    fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary_in_worktree();
+
+        self.executor
+            .spawn(async move {
+                let git_binary = git_binary?;
+                let mut args = vec![OsString::from("tag")];
+                // A message makes it an annotated tag, which records a tagger and
+                // needs the commit environment; without one git creates a
+                // lightweight tag that just points at the commit.
+                if let Some(message) = message.as_ref() {
+                    args.push("--annotate".into());
+                    args.push("--message".into());
+                    args.push(message.into());
+                }
+                args.push((&name).into());
+                if let Some(commit) = commit.as_ref() {
+                    args.push(commit.into());
+                }
+
+                let output = git_binary
+                    .build_command(&args)
+                    .envs(env.iter())
+                    .output()
+                    .await?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "Failed to create tag:\n{}",
+                    String::from_utf8_lossy(&output.stderr),
+                );
+                anyhow::Ok(())
+            })
+            .boxed()
+    }
+
     fn load_unmerged_stages(&self, path: RepoPath) -> BoxFuture<'_, UnmergedStages> {
         let git_binary = self.git_binary_in_worktree();
 
@@ -2597,6 +2633,45 @@ impl GitRepository for RealGitRepository {
                     ours: read_stage(2).await,
                     theirs: read_stage(3).await,
                 }
+            })
+            .boxed()
+    }
+
+    fn apply_patch(&self, patch: String, check_only: bool) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary_in_worktree();
+
+        self.executor
+            .spawn(async move {
+                let git_binary = git_binary?;
+                let mut args = vec!["apply"];
+                if check_only {
+                    args.push("--check");
+                }
+                // The patch arrives on stdin rather than through a file: it may
+                // come from the clipboard, and writing it out first would leave
+                // a temporary file behind on every failure path.
+                args.push("-");
+
+                let mut command = git_binary.build_command(&args);
+                command
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                let mut child = command.spawn()?;
+                child
+                    .stdin
+                    .take()
+                    .context("failed to open stdin for git apply")?
+                    .write_all(patch.as_bytes())
+                    .await?;
+
+                let output = child.output().await?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "Failed to apply patch:\n{}",
+                    String::from_utf8_lossy(&output.stderr),
+                );
+                anyhow::Ok(())
             })
             .boxed()
     }
@@ -2844,41 +2919,6 @@ impl GitRepository for RealGitRepository {
         self.executor
             .spawn(async move {
                 let git_binary = git_binary?;
-                let mut args = vec![OsString::from("tag")];
-                // A message makes it an annotated tag, which records a tagger and
-                // needs the commit environment; without one git creates a
-                // lightweight tag that just points at the commit.
-                if let Some(message) = message.as_ref() {
-                    args.push("--annotate".into());
-                    args.push("--message".into());
-                    args.push(message.into());
-                }
-                args.push((&name).into());
-                if let Some(commit) = commit.as_ref() {
-                    args.push(commit.into());
-                }
-
-                let output = git_binary
-                    .build_command(&args)
-                    .envs(env.iter())
-                let output = git_binary
-                    .build_command(&["tag", "-d", &name])
-                // `refs/tags/` disambiguates: a branch and a tag may share a
-                // name, and a bare name would resolve to the branch. `--detach`
-                // makes the resulting state explicit rather than implied.
-                let tag_ref = format!("refs/tags/{name}");
-                let output = git_binary
-                    .build_command(&["checkout", "--detach", &tag_ref])
-                    .output()
-                    .await?;
-                anyhow::ensure!(
-                    output.status.success(),
-                    "Failed to create tag:\n{}",
-                    "Failed to delete tag:\n{}",
-                    "Failed to check out tag:\n{}",
-                    String::from_utf8_lossy(&output.stderr),
-                );
-                anyhow::Ok(())
                 // Each operation aborts through its own subcommand; there is no
                 // single "abort whatever is running" in git.
                 let args: &[&str] = match operation {
@@ -2982,6 +3022,50 @@ impl GitRepository for RealGitRepository {
             .boxed()
     }
 
+    fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary_in_worktree();
+
+        self.executor
+            .spawn(async move {
+                let git_binary = git_binary?;
+                // `refs/tags/` disambiguates: a branch and a tag may share a
+                // name, and a bare name would resolve to the branch. `--detach`
+                // makes the resulting state explicit rather than implied.
+                let tag_ref = format!("refs/tags/{name}");
+                let output = git_binary
+                    .build_command(&["checkout", "--detach", &tag_ref])
+                    .output()
+                    .await?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "Failed to check out tag:\n{}",
+                    String::from_utf8_lossy(&output.stderr),
+                );
+                anyhow::Ok(())
+            })
+            .boxed()
+    }
+
+    fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary_in_worktree();
+
+        self.executor
+            .spawn(async move {
+                let git_binary = git_binary?;
+                let output = git_binary
+                    .build_command(&["tag", "-d", &name])
+                    .output()
+                    .await?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "Failed to delete tag:\n{}",
+                    String::from_utf8_lossy(&output.stderr),
+                );
+                anyhow::Ok(())
+            })
+            .boxed()
+    }
+
     fn delete_branch(
         &self,
         is_remote: bool,
@@ -3027,45 +3111,6 @@ impl GitRepository for RealGitRepository {
             .spawn(async move {
                 let git = git?;
                 crate::blame::Blame::for_path_at_revision(&git, &path, revision).await
-            })
-            .boxed()
-    }
-
-    fn apply_patch(&self, patch: String, check_only: bool) -> BoxFuture<'_, Result<()>> {
-        let git_binary = self.git_binary_in_worktree();
-
-        self.executor
-            .spawn(async move {
-                let git_binary = git_binary?;
-                let mut args = vec!["apply"];
-                if check_only {
-                    args.push("--check");
-                }
-                // The patch arrives on stdin rather than through a file: it may
-                // come from the clipboard, and writing it out first would leave
-                // a temporary file behind on every failure path.
-                args.push("-");
-
-                let mut command = git_binary.build_command(&args);
-                command
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-                let mut child = command.spawn()?;
-                child
-                    .stdin
-                    .take()
-                    .context("failed to open stdin for git apply")?
-                    .write_all(patch.as_bytes())
-                    .await?;
-
-                let output = child.output().await?;
-                anyhow::ensure!(
-                    output.status.success(),
-                    "Failed to apply patch:\n{}",
-                    String::from_utf8_lossy(&output.stderr),
-                );
-                anyhow::Ok(())
             })
             .boxed()
     }
@@ -5442,15 +5487,6 @@ mod tests {
 
     #[gpui::test]
     async fn test_create_branch_from_commit_sha(cx: &mut TestAppContext) {
-    async fn test_create_tag_lightweight_and_annotated(cx: &mut TestAppContext) {
-    async fn test_delete_tag(cx: &mut TestAppContext) {
-    #[gpui::test]
-    async fn test_push_tag_refspec(cx: &mut TestAppContext) {
-    #[gpui::test]
-    async fn test_checkout_tag_detaches_and_disambiguates(cx: &mut TestAppContext) {
-    #[gpui::test]
-    async fn test_sequencer_state_detects_operations(cx: &mut TestAppContext) {
-    async fn test_apply_patch(cx: &mut TestAppContext) {
         disable_git_global_config();
         cx.executor().allow_parking();
 
@@ -5468,50 +5504,6 @@ mod tests {
         git_command(&repo_directory, ["commit", "-m", "second"]);
         let second_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
         assert_ne!(first_sha, second_sha);
-        let head_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
-        git_command(&repo_directory, ["tag", "v1.0.0"]);
-
-        let repository = RealGitRepository::new(
-            &repo_directory.join(".git"),
-        let (remote_directory, clone_directory) =
-            clone_remote_repository_with_main_and_feature(temp_dir.path());
-
-        git_command(&clone_directory, ["tag", "v1.0.0"]);
-        assert_eq!(
-            git_command_output(&remote_directory, ["tag", "-l"]),
-            "",
-            "the tag starts out local only"
-        );
-
-        let repository = RealGitRepository::new(
-            &clone_directory.join(".git"),
-        let tagged_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
-        git_command(&repo_directory, ["tag", "release"]);
-
-        // A branch with the same name as the tag, pointing somewhere else: a bare
-        // `git checkout release` would land on the branch, not the tag.
-        git_command(&repo_directory, ["branch", "release"]);
-        fs::write(repo_directory.join("file.txt"), "second").unwrap();
-        git_command(&repo_directory, ["add", "file.txt"]);
-        git_command(&repo_directory, ["commit", "-m", "second"]);
-        git_command(&repo_directory, ["branch", "-f", "release", "HEAD"]);
-        // Explicit ref: a bare `rev-parse release` is itself ambiguous and
-        // resolves to the tag, which is the very confusion under test.
-        let branch_sha = git_command_output(&repo_directory, ["rev-parse", "refs/heads/release"]);
-        assert_ne!(tagged_sha, branch_sha);
-        fs::write(repo_directory.join("file.txt"), "base\n").unwrap();
-        git_command(&repo_directory, ["add", "file.txt"]);
-        git_command(&repo_directory, ["commit", "-m", "base"]);
-
-        git_command(&repo_directory, ["switch", "-c", "topic"]);
-        fs::write(repo_directory.join("file.txt"), "topic\n").unwrap();
-        git_command(&repo_directory, ["add", "file.txt"]);
-        git_command(&repo_directory, ["commit", "-m", "topic"]);
-
-        git_command(&repo_directory, ["switch", "main"]);
-        fs::write(repo_directory.join("file.txt"), "main\n").unwrap();
-        git_command(&repo_directory, ["add", "file.txt"]);
-        git_command(&repo_directory, ["commit", "-m", "main"]);
 
         let repository = RealGitRepository::new(
             &repo_directory.join(".git"),
@@ -5538,6 +5530,34 @@ mod tests {
             git_command_output(&repo_directory, ["rev-parse", "HEAD"]),
             first_sha,
             "the new branch should start at the requested commit, not at HEAD"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_create_tag_lightweight_and_annotated(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("file.txt"), "first").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "first"]);
+        let first_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
+
+        fs::write(repo_directory.join("file.txt"), "second").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "second"]);
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
         let env = Arc::new(test_commit_envs());
 
         // Lightweight: no message, and pointing at an older commit rather than HEAD.
@@ -5596,24 +5616,32 @@ mod tests {
                 .await
                 .is_err()
         );
-        repository.delete_tag("v1.0.0".to_string()).await.unwrap();
-        assert_eq!(
-            git_command_output(&repo_directory, ["tag", "-l"]),
-            "",
-            "the tag should be gone"
-        );
-        assert_eq!(
-            git_command_output(&repo_directory, ["rev-parse", "HEAD"]),
-            head_sha,
-            "deleting a tag must not move HEAD or touch the commit it pointed at"
-        );
-
-        // Deleting something that isn't there must report an error rather than
-        // silently succeeding.
-        assert!(repository.delete_tag("v1.0.0".to_string()).await.is_err());
     }
 
     #[gpui::test]
+    async fn test_push_tag_refspec(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (remote_directory, clone_directory) =
+            clone_remote_repository_with_main_and_feature(temp_dir.path());
+
+        git_command(&clone_directory, ["tag", "v1.0.0"]);
+        assert_eq!(
+            git_command_output(&remote_directory, ["tag", "-l"]),
+            "",
+            "the tag starts out local only"
+        );
+
+        let repository = RealGitRepository::new(
+            &clone_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+
         // Pushing a tag is pushing a ref, so the existing `push` carries it with
         // an explicit refs/tags refspec — no separate git command is needed.
         repository
@@ -5639,6 +5667,43 @@ mod tests {
             git_command_output(&clone_directory, ["rev-parse", "v1.0.0^{commit}"]),
             "the pushed tag should point at the same commit"
         );
+    }
+
+    #[gpui::test]
+    async fn test_checkout_tag_detaches_and_disambiguates(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("file.txt"), "first").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "first"]);
+        let tagged_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
+        git_command(&repo_directory, ["tag", "release"]);
+
+        // A branch with the same name as the tag, pointing somewhere else: a bare
+        // `git checkout release` would land on the branch, not the tag.
+        git_command(&repo_directory, ["branch", "release"]);
+        fs::write(repo_directory.join("file.txt"), "second").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "second"]);
+        git_command(&repo_directory, ["branch", "-f", "release", "HEAD"]);
+        // Explicit ref: a bare `rev-parse release` is itself ambiguous and
+        // resolves to the tag, which is the very confusion under test.
+        let branch_sha = git_command_output(&repo_directory, ["rev-parse", "refs/heads/release"]);
+        assert_ne!(tagged_sha, branch_sha);
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+
         repository
             .checkout_tag("release".to_string())
             .await
@@ -5660,6 +5725,40 @@ mod tests {
                 .checkout_tag("does-not-exist".to_string())
                 .await
                 .is_err()
+        );
+    }
+
+    #[gpui::test]
+    async fn test_sequencer_state_detects_operations(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("file.txt"), "base\n").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "base"]);
+
+        git_command(&repo_directory, ["switch", "-c", "topic"]);
+        fs::write(repo_directory.join("file.txt"), "topic\n").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "topic"]);
+
+        git_command(&repo_directory, ["switch", "main"]);
+        fs::write(repo_directory.join("file.txt"), "main\n").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "main"]);
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+
         assert_eq!(
             repository.sequencer_state().await,
             None,
@@ -5747,19 +5846,6 @@ mod tests {
         fs::write(repo_directory.join("file.txt"), "main\n").unwrap();
         git_command(&repo_directory, ["add", "file.txt"]);
         git_command(&repo_directory, ["commit", "-m", "main"]);
-
-        fs::write(repo_directory.join("file.txt"), "one\ntwo\n").unwrap();
-        git_command(&repo_directory, ["add", "."]);
-        git_command(&repo_directory, ["commit", "-m", "base"]);
-
-        // Produce a real patch by changing the file and asking git for the diff.
-        fs::write(repo_directory.join("file.txt"), "one\nTWO\n").unwrap();
-        let patch = git_command_output(&repo_directory, ["diff"]);
-        git_command(&repo_directory, ["checkout", "--", "file.txt"]);
-        assert_eq!(
-            fs::read_to_string(repo_directory.join("file.txt")).unwrap(),
-            "one\ntwo\n"
-        );
 
         let repository = RealGitRepository::new(
             &repo_directory.join(".git"),
@@ -5986,6 +6072,71 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_reset_modes_differ_in_what_they_touch(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("file.txt"), "first\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "first"]);
+        let first_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
+
+        fs::write(repo_directory.join("file.txt"), "second\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "second"]);
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+        let env = Arc::new(test_commit_envs());
+
+        // Soft moves the branch pointer and leaves the file alone.
+        repository
+            .reset(first_sha.clone(), ResetMode::Soft, env.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            git_command_output(&repo_directory, ["rev-parse", "HEAD"]),
+            first_sha
+        );
+        assert_eq!(
+            fs::read_to_string(repo_directory.join("file.txt")).unwrap(),
+            "second\n",
+            "a soft reset must not touch the working tree"
+        );
+        assert_eq!(
+            git_command_output(&repo_directory, ["diff", "--cached", "--name-only"]),
+            "file.txt",
+            "the committed change becomes staged"
+        );
+
+        // Hard is the destructive one: it throws the file contents away.
+        git_command(&repo_directory, ["commit", "-m", "second again"]);
+        repository
+            .reset(first_sha.clone(), ResetMode::Hard, env)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(repo_directory.join("file.txt")).unwrap(),
+            "first\n",
+            "a hard reset discards the working tree changes"
+        );
+        assert_eq!(
+            git_command_output(&repo_directory, ["status", "--porcelain"]),
+            "",
+            "nothing is left staged or modified"
+        );
+    }
+
+    #[gpui::test]
     async fn test_cherry_pick_and_revert(cx: &mut TestAppContext) {
         disable_git_global_config();
         cx.executor().allow_parking();
@@ -6147,6 +6298,35 @@ mod tests {
         assert_eq!(stages, UnmergedStages::default());
     }
 
+    #[gpui::test]
+    async fn test_apply_patch(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("file.txt"), "one\ntwo\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "base"]);
+
+        // Produce a real patch by changing the file and asking git for the diff.
+        fs::write(repo_directory.join("file.txt"), "one\nTWO\n").unwrap();
+        let patch = git_command_output(&repo_directory, ["diff"]);
+        git_command(&repo_directory, ["checkout", "--", "file.txt"]);
+        assert_eq!(
+            fs::read_to_string(repo_directory.join("file.txt")).unwrap(),
+            "one\ntwo\n"
+        );
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
 
         // `--check` must not touch the working tree.
         repository
@@ -6223,70 +6403,6 @@ mod tests {
             "feature"
         );
         assert_eq!(
-            #[gpui::test]
-            async fn test_reset_modes_differ_in_what_they_touch(cx: &mut TestAppContext) {
-                disable_git_global_config();
-                cx.executor().allow_parking();
-
-                let temp_dir = tempfile::tempdir().unwrap();
-                let repo_directory = temp_dir.path().join("repo");
-                git_init_repo(&repo_directory);
-
-                fs::write(repo_directory.join("file.txt"), "first\n").unwrap();
-                git_command(&repo_directory, ["add", "."]);
-                git_command(&repo_directory, ["commit", "-m", "first"]);
-                let first_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
-
-                fs::write(repo_directory.join("file.txt"), "second\n").unwrap();
-                git_command(&repo_directory, ["add", "."]);
-                git_command(&repo_directory, ["commit", "-m", "second"]);
-
-                let repository = RealGitRepository::new(
-                    &repo_directory.join(".git"),
-                    None,
-                    Some("git".into()),
-                    cx.executor(),
-                )
-                .unwrap();
-                let env = Arc::new(test_commit_envs());
-
-                // Soft moves the branch pointer and leaves the file alone.
-                repository
-                    .reset(first_sha.clone(), ResetMode::Soft, env.clone())
-                    .await
-                    .unwrap();
-                assert_eq!(
-                    git_command_output(&repo_directory, ["rev-parse", "HEAD"]),
-                    first_sha
-                );
-                assert_eq!(
-                    fs::read_to_string(repo_directory.join("file.txt")).unwrap(),
-                    "second\n",
-                    "a soft reset must not touch the working tree"
-                );
-                assert_eq!(
-                    git_command_output(&repo_directory, ["diff", "--cached", "--name-only"]),
-                    "file.txt",
-                    "the committed change becomes staged"
-                );
-
-                // Hard is the destructive one: it throws the file contents away.
-                git_command(&repo_directory, ["commit", "-m", "second again"]);
-                repository
-                    .reset(first_sha.clone(), ResetMode::Hard, env)
-                    .await
-                    .unwrap();
-                assert_eq!(
-                    fs::read_to_string(repo_directory.join("file.txt")).unwrap(),
-                    "first\n",
-                    "a hard reset discards the working tree changes"
-                );
-                assert_eq!(
-                    git_command_output(&repo_directory, ["status", "--porcelain"]),
-                    "",
-                    "nothing is left staged or modified"
-                );
-            },
             git.run(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}",])
                 .await
                 .unwrap(),

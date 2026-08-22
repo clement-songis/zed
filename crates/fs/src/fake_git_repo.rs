@@ -970,20 +970,11 @@ impl GitRepository for FakeGitRepository {
         self.with_state_async(true, move |state| {
             if !state.tags.insert(name.clone()) {
                 bail!("tag '{name}' already exists");
-    fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
-        self.with_state_async(true, move |state| {
-            if !state.tags.remove(&name) {
-                bail!("tag '{name}' not found");
             }
-    fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
-        self.with_state_async(true, move |state| {
-            if !state.tags.contains(&name) {
-                bail!("tag '{name}' not found");
-            }
-            // A detached HEAD has no branch name.
-            state.current_branch_name = None;
             Ok(())
         })
+    }
+
     fn load_unmerged_stages(&self, path: RepoPath) -> BoxFuture<'_, UnmergedStages> {
         let stages = self.with_state_async(false, move |state| {
             Ok(state
@@ -993,6 +984,15 @@ impl GitRepository for FakeGitRepository {
                 .unwrap_or_default())
         });
         async move { stages.await.unwrap_or_default() }.boxed()
+    }
+
+    fn apply_patch(&self, patch: String, _check_only: bool) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |_state| {
+            if patch.trim().is_empty() {
+                bail!("empty patch");
+            }
+            Ok(())
+        })
     }
 
     fn cherry_pick(
@@ -1060,10 +1060,6 @@ impl GitRepository for FakeGitRepository {
         self.with_state_async(true, move |state| {
             if state.sequencer_state.take().is_none() {
                 bail!("no operation in progress");
-    fn apply_patch(&self, patch: String, _check_only: bool) -> BoxFuture<'_, Result<()>> {
-        self.with_state_async(true, move |_state| {
-            if patch.trim().is_empty() {
-                bail!("empty patch");
             }
             Ok(())
         })
@@ -1081,6 +1077,26 @@ impl GitRepository for FakeGitRepository {
     fn sequencer_state(&self) -> BoxFuture<'_, Option<SequencerState>> {
         let state = self.with_state_async(false, |state| Ok(state.sequencer_state.clone()));
         async move { state.await.ok().flatten() }.boxed()
+    }
+
+    fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            if !state.tags.contains(&name) {
+                bail!("tag '{name}' not found");
+            }
+            // A detached HEAD has no branch name.
+            state.current_branch_name = None;
+            Ok(())
+        })
+    }
+
+    fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            if !state.tags.remove(&name) {
+                bail!("tag '{name}' not found");
+            }
+            Ok(())
+        })
     }
 
     fn rename_branch(&self, branch: String, new_name: String) -> BoxFuture<'_, Result<()>> {

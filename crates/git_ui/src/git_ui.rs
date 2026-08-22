@@ -7,7 +7,6 @@ use workspace::{Toast, notifications::NotificationId};
 mod blame_ui;
 pub mod clone;
 
-use git::repository::ResetMode;
 use git::repository::{MergeOutcome, ResetMode};
 use git::{
     repository::{Branch, CommitDetails, Upstream, UpstreamTracking, UpstreamTrackingStatus},
@@ -16,7 +15,7 @@ use git::{
 use gpui::PromptLevel;
 use gpui::{
     App, ClipboardItem, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    PromptLevel, SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
+    SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
 };
 use menu::{Cancel, Confirm};
 use project::git_store::Repository;
@@ -583,16 +582,6 @@ struct CreateBranchFromCommitModal {
 impl CreateBranchFromCommitModal {
     fn new(
         base: SharedString,
-struct CreateTagModal {
-    commit: SharedString,
-    name_editor: Entity<Editor>,
-    message_editor: Entity<Editor>,
-    repo: Entity<Repository>,
-}
-
-impl CreateTagModal {
-    fn new(
-        commit: SharedString,
         repo: Entity<Repository>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -603,22 +592,6 @@ impl CreateTagModal {
             editor
         });
         Self { base, editor, repo }
-        let name_editor = cx.new(|cx| {
-            let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("Tag name…", window, cx);
-            editor
-        });
-        let message_editor = cx.new(|cx| {
-            let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("Message (optional)…", window, cx);
-            editor
-        });
-        Self {
-            commit,
-            name_editor,
-            message_editor,
-            repo,
-        }
     }
 
     fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
@@ -627,25 +600,6 @@ impl CreateTagModal {
 
     fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
         let name = branch_picker::normalize_branch_name(&self.editor.read(cx).text(cx));
-    fn focus_next_field(
-        &mut self,
-        _: &git::FocusTagMessage,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self
-            .name_editor
-            .focus_handle(cx)
-            .contains_focused(window, cx)
-        {
-            self.message_editor.focus_handle(cx).focus(window, cx);
-        } else {
-            self.name_editor.focus_handle(cx).focus(window, cx);
-        }
-    }
-
-    fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
-        let name = self.name_editor.read(cx).text(cx).trim().to_string();
         if name.is_empty() {
             // Leave the modal open rather than silently doing nothing.
             return;
@@ -656,15 +610,6 @@ impl CreateTagModal {
         cx.spawn(async move |_, cx| {
             match repo
                 .update(cx, |repo, _| repo.create_branch(name, Some(base)))
-        let message = self.message_editor.read(cx).text(cx).trim().to_string();
-        // An empty message means a lightweight tag rather than an annotated one.
-        let message = (!message.is_empty()).then_some(message);
-
-        let repo = self.repo.clone();
-        let commit = self.commit.to_string();
-        cx.spawn(async move |_, cx| {
-            match repo
-                .update(cx, |repo, _| repo.create_tag(name, Some(commit), message))
                 .await
             {
                 Ok(Ok(())) => Ok(()),
@@ -673,7 +618,6 @@ impl CreateTagModal {
             }
         })
         .detach_and_prompt_err("Failed to create branch", window, cx, |e, _, _| {
-        .detach_and_prompt_err("Failed to create tag", window, cx, |e, _, _| {
             Some(e.to_string())
         });
         cx.emit(DismissEvent);
@@ -694,23 +638,50 @@ impl Render for CreateBranchFromCommitModal {
             .key_context("CreateBranchFromCommitModal")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-impl EventEmitter<DismissEvent> for CreateTagModal {}
-impl ModalView for CreateTagModal {}
-impl Focusable for CreateTagModal {
-    fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.name_editor.focus_handle(cx)
+            .elevation_2(cx)
+            .w(rems(34.))
+            .child(
+                h_flex()
+                    .px_3()
+                    .pt_2()
+                    .pb_1()
+                    .w_full()
+                    .gap_1p5()
+                    .child(Icon::new(IconName::GitBranch).size(IconSize::XSmall))
+                    .child(
+                        Headline::new(format!("New Branch from {}", self.base))
+                            .size(HeadlineSize::XSmall),
+                    ),
+            )
+            .child(div().px_3().pb_1().w_full().child(self.editor.clone()))
+            .child(
+                div().px_3().pb_3().w_full().child(
+                    Label::new("The new branch will be checked out.")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                ),
+            )
     }
 }
 
-impl Render for CreateTagModal {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .key_context("CreateTagModal")
-            .on_action(cx.listener(Self::cancel))
-            .on_action(cx.listener(Self::confirm))
-            .on_action(cx.listener(Self::focus_next_field))
-            .elevation_2(cx)
-            .w(rems(34.))
+/// Opens a modal to create a branch starting at `base`, which may be any
+/// committish (a SHA, tag, or branch name).
+pub(crate) fn create_branch_from_commit(
+    base: SharedString,
+    repo: Entity<Repository>,
+    workspace: WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.toggle_modal(window, cx, |window, cx| {
+                CreateBranchFromCommitModal::new(base, repo, window, cx)
+            });
+        })
+        .log_err();
+}
+
 struct CommandLogModal {
     records: Vec<(SharedString, std::time::Duration)>,
     focus_handle: FocusHandle,
@@ -744,201 +715,6 @@ impl Render for CommandLogModal {
                     .px_3()
                     .pt_2()
                     .pb_1()
-                    .w_full()
-                    .gap_1p5()
-                    .child(Icon::new(IconName::GitBranch).size(IconSize::XSmall))
-                    .child(
-                        Headline::new(format!("New Branch from {}", self.base))
-                            .size(HeadlineSize::XSmall),
-                    ),
-            )
-            .child(div().px_3().pb_1().w_full().child(self.editor.clone()))
-            .child(
-                div().px_3().pb_3().w_full().child(
-                    Label::new("The new branch will be checked out.")
-                    .child(Icon::new(IconName::Bookmark).size(IconSize::XSmall))
-                    .child(
-                        Headline::new(format!("New Tag at {}", self.commit))
-                            .size(HeadlineSize::XSmall),
-                    ),
-            )
-            .child(div().px_3().pb_1().w_full().child(self.name_editor.clone()))
-            .child(
-                div()
-                    .px_3()
-                    .pb_1()
-                    .w_full()
-                    .child(self.message_editor.clone()),
-            )
-            .child(
-                div().px_3().pb_3().w_full().child(
-                    Label::new("Without a message, a lightweight tag is created.")
-                        .size(LabelSize::Small)
-                        .color(Color::Muted),
-                ),
-            )
-    }
-}
-
-/// Opens a modal to create a branch starting at `base`, which may be any
-/// committish (a SHA, tag, or branch name).
-pub(crate) fn create_branch_from_commit(
-    base: SharedString,
-/// Opens a modal to create a tag at `commit`, which may be any committish.
-pub(crate) fn create_tag_at_commit(
-    commit: SharedString,
-    repo: Entity<Repository>,
-    workspace: WeakEntity<Workspace>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    workspace
-        .update(cx, |workspace, cx| {
-            workspace.toggle_modal(window, cx, |window, cx| {
-                CreateBranchFromCommitModal::new(base, repo, window, cx)
-            });
-        })
-        .log_err();
-                CreateTagModal::new(commit, repo, window, cx)
-            });
-        })
-        .ok();
-/// Deletes a local tag, after confirming.
-///
-/// A deleted tag is only recoverable by someone who still knows the commit it
-/// pointed at, so this always confirms rather than offering an undo.
-pub(crate) fn delete_tag(
-/// Checks out a tag, after confirming.
-///
-/// This leaves the repository on a detached HEAD, which is easy to end up in by
-/// accident and confusing to be in unknowingly, so the prompt names the state
-/// and how to leave it rather than just asking to proceed.
-pub(crate) fn checkout_tag(
-    tag_name: SharedString,
-/// Resets the current branch to `commit`.
-///
-/// Only `Hard` can destroy work, so it is the only mode that spells out what is
-/// lost; the others move the branch pointer and leave the files alone.
-pub(crate) fn reset_to_commit(
-    commit: SharedString,
-    mode: ResetMode,
-    repository: Option<WeakEntity<Repository>>,
-    window: &mut Window,
-/// Applies a commit on top of the current branch, or undoes it.
-///
-/// Both stop on conflicts the same way a merge does, so the outcome is handed
-/// to the sequencer banner rather than reported as an error.
-pub(crate) fn apply_commit(
-    commit: SharedString,
-    undo: bool,
-    repository: Option<WeakEntity<Repository>>,
-    workspace: WeakEntity<Workspace>,
-    cx: &mut App,
-) {
-    let Some(repository) = repository.and_then(|repository| repository.upgrade()) else {
-        return;
-    };
-    let prompt = window.prompt(
-        PromptLevel::Warning,
-        &format!("Delete tag {tag_name}?"),
-        None,
-        &["Delete", "Cancel"],
-        &format!("Check out tag {tag_name}?"),
-        Some(
-            "This leaves you on a detached HEAD: commits you make will not belong to any \
-             branch. Switch to a branch, or create one from here, to get back.",
-        ),
-        &["Check Out", "Cancel"],
-    let (label, detail) = match mode {
-        ResetMode::Soft => ("Soft reset", "Committed changes become staged."),
-        ResetMode::Mixed => ("Mixed reset", "Committed changes become unstaged."),
-        ResetMode::Hard => (
-            "Hard reset",
-            "Uncommitted changes will be discarded. This cannot be undone.",
-        ),
-        ResetMode::Keep => (
-            "Keep reset",
-            "Refuses rather than discarding if a changed file would be overwritten.",
-        ),
-    };
-    let prompt = window.prompt(
-        PromptLevel::Warning,
-        &format!("{label} to {commit}?"),
-        Some(detail),
-        &["Reset", "Cancel"],
-        cx,
-    );
-    window
-        .spawn(cx, async move |cx| {
-            if prompt.await.ok() != Some(0) {
-                return;
-            }
-            let deleted = cx
-                .update(|_, cx| {
-                    repository.update(cx, |repository, _| {
-                        repository.delete_tag(tag_name.to_string())
-                    })
-                })
-                .ok();
-            if let Some(deleted) = deleted
-                && let Ok(Err(error)) = deleted.await
-            {
-                log::error!("failed to delete tag: {error:#}");
-            let checked_out = cx
-                .update(|_, cx| {
-                    repository.update(cx, |repository, _| {
-                        repository.checkout_tag(tag_name.to_string())
-                    })
-                })
-                .ok();
-            if let Some(checked_out) = checked_out
-                && let Ok(Err(error)) = checked_out.await
-            {
-                log::error!("failed to check out tag: {error:#}");
-            let reset = cx
-                .update(|_, cx| {
-                    repository.update(cx, |repository, cx| {
-                        repository.reset(commit.to_string(), mode, cx)
-                    })
-                })
-                .ok();
-            if let Some(reset) = reset
-                && let Ok(Err(error)) = reset.await
-            {
-                log::error!("failed to reset: {error:#}");
-            }
-        })
-        .detach();
-    let verb = if undo { "Revert" } else { "Cherry-pick" };
-    cx.spawn(async move |cx| {
-        let outcome = repository
-            .update(cx, |repository, _| {
-                if undo {
-                    repository.revert(vec![commit.to_string()], None)
-                } else {
-                    // -x records where the commit came from, which is the
-                    // convention when moving commits between shared branches.
-                    repository.cherry_pick(vec![commit.to_string()], true)
-                }
-            })
-            .await?;
-
-        let message = match outcome {
-            Ok(MergeOutcome::Merged) => format!("{verb} of {commit} applied"),
-            Ok(MergeOutcome::Conflicted) => format!("{verb} of {commit} stopped on conflicts"),
-            Err(error) => format!("{verb} failed: {error}"),
-        };
-        workspace.update(cx, |workspace, cx| {
-            struct ApplyCommitToast;
-            workspace.show_toast(
-                Toast::new(NotificationId::unique::<ApplyCommitToast>(), message).autohide(),
-                cx,
-            );
-        })
-    })
-    .detach_and_log_err(cx);
-}
-
                     .gap_1p5()
                     .child(Icon::new(IconName::Terminal).size(IconSize::XSmall))
                     .child(Headline::new("Git Commands").size(HeadlineSize::XSmall)),
@@ -976,6 +752,337 @@ pub(crate) fn apply_commit(
                     .into_any_element()
             })
     }
+}
+
+struct CreateTagModal {
+    commit: SharedString,
+    name_editor: Entity<Editor>,
+    message_editor: Entity<Editor>,
+    repo: Entity<Repository>,
+}
+
+impl CreateTagModal {
+    fn new(
+        commit: SharedString,
+        repo: Entity<Repository>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let name_editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("Tag name…", window, cx);
+            editor
+        });
+        let message_editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("Message (optional)…", window, cx);
+            editor
+        });
+        Self {
+            commit,
+            name_editor,
+            message_editor,
+            repo,
+        }
+    }
+
+    fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(DismissEvent);
+    }
+
+    fn focus_next_field(
+        &mut self,
+        _: &git::FocusTagMessage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .name_editor
+            .focus_handle(cx)
+            .contains_focused(window, cx)
+        {
+            self.message_editor.focus_handle(cx).focus(window, cx);
+        } else {
+            self.name_editor.focus_handle(cx).focus(window, cx);
+        }
+    }
+
+    fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.name_editor.read(cx).text(cx).trim().to_string();
+        if name.is_empty() {
+            // Leave the modal open rather than silently doing nothing.
+            return;
+        }
+        let message = self.message_editor.read(cx).text(cx).trim().to_string();
+        // An empty message means a lightweight tag rather than an annotated one.
+        let message = (!message.is_empty()).then_some(message);
+
+        let repo = self.repo.clone();
+        let commit = self.commit.to_string();
+        cx.spawn(async move |_, cx| {
+            match repo
+                .update(cx, |repo, _| repo.create_tag(name, Some(commit), message))
+                .await
+            {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err(anyhow!("Operation was canceled")),
+            }
+        })
+        .detach_and_prompt_err("Failed to create tag", window, cx, |e, _, _| {
+            Some(e.to_string())
+        });
+        cx.emit(DismissEvent);
+    }
+}
+
+impl EventEmitter<DismissEvent> for CreateTagModal {}
+impl ModalView for CreateTagModal {}
+impl Focusable for CreateTagModal {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.name_editor.focus_handle(cx)
+    }
+}
+
+impl Render for CreateTagModal {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .key_context("CreateTagModal")
+            .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::confirm))
+            .on_action(cx.listener(Self::focus_next_field))
+            .elevation_2(cx)
+            .w(rems(34.))
+            .child(
+                h_flex()
+                    .px_3()
+                    .pt_2()
+                    .pb_1()
+                    .w_full()
+                    .gap_1p5()
+                    .child(Icon::new(IconName::Bookmark).size(IconSize::XSmall))
+                    .child(
+                        Headline::new(format!("New Tag at {}", self.commit))
+                            .size(HeadlineSize::XSmall),
+                    ),
+            )
+            .child(div().px_3().pb_1().w_full().child(self.name_editor.clone()))
+            .child(
+                div()
+                    .px_3()
+                    .pb_1()
+                    .w_full()
+                    .child(self.message_editor.clone()),
+            )
+            .child(
+                div().px_3().pb_3().w_full().child(
+                    Label::new("Without a message, a lightweight tag is created.")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                ),
+            )
+    }
+}
+
+/// Opens a modal to create a tag at `commit`, which may be any committish.
+pub(crate) fn create_tag_at_commit(
+    commit: SharedString,
+    repo: Entity<Repository>,
+    workspace: WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.toggle_modal(window, cx, |window, cx| {
+                CreateTagModal::new(commit, repo, window, cx)
+            });
+        })
+        .log_err();
+}
+
+/// Applies a commit on top of the current branch, or undoes it.
+///
+/// Both stop on conflicts the same way a merge does, so the outcome is handed
+/// to the sequencer banner rather than reported as an error.
+pub(crate) fn apply_commit(
+    commit: SharedString,
+    undo: bool,
+    repository: Option<WeakEntity<Repository>>,
+    workspace: WeakEntity<Workspace>,
+    cx: &mut App,
+) {
+    let Some(repository) = repository.and_then(|repository| repository.upgrade()) else {
+        return;
+    };
+    let verb = if undo { "Revert" } else { "Cherry-pick" };
+    cx.spawn(async move |cx| {
+        let outcome = repository
+            .update(cx, |repository, _| {
+                if undo {
+                    repository.revert(vec![commit.to_string()], None)
+                } else {
+                    // -x records where the commit came from, which is the
+                    // convention when moving commits between shared branches.
+                    repository.cherry_pick(vec![commit.to_string()], true)
+                }
+            })
+            .await?;
+
+        let message = match outcome {
+            Ok(MergeOutcome::Merged) => format!("{verb} of {commit} applied"),
+            Ok(MergeOutcome::Conflicted) => format!("{verb} of {commit} stopped on conflicts"),
+            Err(error) => format!("{verb} failed: {error}"),
+        };
+        workspace.update(cx, |workspace, cx| {
+            struct ApplyCommitToast;
+            workspace.show_toast(
+                Toast::new(NotificationId::unique::<ApplyCommitToast>(), message).autohide(),
+                cx,
+            );
+        })
+    })
+    .detach_and_log_err(cx);
+}
+
+/// Resets the current branch to `commit`.
+///
+/// Only `Hard` can destroy work, so it is the only mode that spells out what is
+/// lost; the others move the branch pointer and leave the files alone.
+pub(crate) fn reset_to_commit(
+    commit: SharedString,
+    mode: ResetMode,
+    repository: Option<WeakEntity<Repository>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(repository) = repository.and_then(|repository| repository.upgrade()) else {
+        return;
+    };
+    let (label, detail) = match mode {
+        ResetMode::Soft => ("Soft reset", "Committed changes become staged."),
+        ResetMode::Mixed => ("Mixed reset", "Committed changes become unstaged."),
+        ResetMode::Hard => (
+            "Hard reset",
+            "Uncommitted changes will be discarded. This cannot be undone.",
+        ),
+        ResetMode::Keep => (
+            "Keep reset",
+            "Refuses rather than discarding if a changed file would be overwritten.",
+        ),
+    };
+    let prompt = window.prompt(
+        PromptLevel::Warning,
+        &format!("{label} to {commit}?"),
+        Some(detail),
+        &["Reset", "Cancel"],
+        cx,
+    );
+    window
+        .spawn(cx, async move |cx| {
+            if prompt.await.ok() != Some(0) {
+                return;
+            }
+            let reset = cx
+                .update(|_, cx| {
+                    repository.update(cx, |repository, cx| {
+                        repository.reset(commit.to_string(), mode, cx)
+                    })
+                })
+                .ok();
+            if let Some(reset) = reset
+                && let Ok(Err(error)) = reset.await
+            {
+                log::error!("failed to reset: {error:#}");
+            }
+        })
+        .detach();
+}
+
+/// Checks out a tag, after confirming.
+///
+/// This leaves the repository on a detached HEAD, which is easy to end up in by
+/// accident and confusing to be in unknowingly, so the prompt names the state
+/// and how to leave it rather than just asking to proceed.
+pub(crate) fn checkout_tag(
+    tag_name: SharedString,
+    repository: Option<WeakEntity<Repository>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(repository) = repository.and_then(|repository| repository.upgrade()) else {
+        return;
+    };
+    let prompt = window.prompt(
+        PromptLevel::Warning,
+        &format!("Check out tag {tag_name}?"),
+        Some(
+            "This leaves you on a detached HEAD: commits you make will not belong to any \
+             branch. Switch to a branch, or create one from here, to get back.",
+        ),
+        &["Check Out", "Cancel"],
+        cx,
+    );
+    window
+        .spawn(cx, async move |cx| {
+            if prompt.await.ok() != Some(0) {
+                return;
+            }
+            let checked_out = cx
+                .update(|_, cx| {
+                    repository.update(cx, |repository, _| {
+                        repository.checkout_tag(tag_name.to_string())
+                    })
+                })
+                .ok();
+            if let Some(checked_out) = checked_out
+                && let Ok(Err(error)) = checked_out.await
+            {
+                log::error!("failed to check out tag: {error:#}");
+            }
+        })
+        .detach();
+}
+
+/// Deletes a local tag, after confirming.
+///
+/// A deleted tag is only recoverable by someone who still knows the commit it
+/// pointed at, so this always confirms rather than offering an undo.
+pub(crate) fn delete_tag(
+    tag_name: SharedString,
+    repository: Option<WeakEntity<Repository>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(repository) = repository.and_then(|repository| repository.upgrade()) else {
+        return;
+    };
+    let prompt = window.prompt(
+        PromptLevel::Warning,
+        &format!("Delete tag {tag_name}?"),
+        None,
+        &["Delete", "Cancel"],
+        cx,
+    );
+    window
+        .spawn(cx, async move |cx| {
+            if prompt.await.ok() != Some(0) {
+                return;
+            }
+            let deleted = cx
+                .update(|_, cx| {
+                    repository.update(cx, |repository, _| {
+                        repository.delete_tag(tag_name.to_string())
+                    })
+                })
+                .ok();
+            if let Some(deleted) = deleted
+                && let Ok(Err(error)) = deleted.await
+            {
+                log::error!("failed to delete tag: {error:#}");
+            }
+        })
+        .detach();
 }
 
 fn copy_branch_name(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
