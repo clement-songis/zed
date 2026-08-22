@@ -14,8 +14,9 @@ use git::{
         AskPassDelegate, Branch, CommitData, CommitDataReader, CommitDetails, CommitOptions,
         CreateWorktreeTarget, FetchOptions, FileHistoryChangedFileSets, GRAPH_CHUNK_SIZE,
         GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder, LogSource,
-        PushOptions, RefEdit, Remote, RepoPath, ResetMode, SearchCommitArgs, SequencerAdvance,
-        SequencerOperation, SequencerState, Worktree, commit_hash_search_query,
+        MergeOptions, MergeOutcome, PushOptions, RefEdit, Remote, RepoPath, ResetMode,
+        SearchCommitArgs, SequencerAdvance, SequencerOperation, SequencerState, Worktree,
+        commit_hash_search_query,
     },
     stash::GitStash,
     status::{
@@ -977,6 +978,20 @@ impl GitRepository for FakeGitRepository {
             state.current_branch_name = None;
             Ok(())
         })
+    fn merge(
+        &self,
+        branch: String,
+        _options: MergeOptions,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>> {
+        self.with_state_async(true, move |state| {
+            if !state.branches.contains(&branch) {
+                bail!("branch '{branch}' not found");
+            }
+            Ok(MergeOutcome::Merged)
+        })
+    }
+
     fn sequencer_advance(
         &self,
         _operation: SequencerOperation,

@@ -218,6 +218,20 @@ message GitCheckoutTag {
   uint64 project_id = 1;
   uint64 repository_id = 2;
   string tag_name = 3;
+message GitMerge {
+  uint64 project_id = 1;
+  uint64 repository_id = 2;
+  string branch = 3;
+  bool no_fast_forward = 4;
+  bool fast_forward_only = 5;
+  bool squash = 6;
+  bool no_commit = 7;
+}
+
+message GitMergeResponse {
+  bool conflicted = 1;
+}
+
 message GitSequencerAdvance {
   uint64 project_id = 1;
   uint64 repository_id = 2;

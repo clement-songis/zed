@@ -655,6 +655,26 @@ impl SequencerOperation {
     }
 }
 
+/// Options for `git merge`, mirroring the flags they map to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MergeOptions {
+    /// `--no-ff`: always record a merge commit, even when fast-forwarding.
+    pub no_fast_forward: bool,
+    /// `--ff-only`: refuse to merge unless it can fast-forward.
+    pub fast_forward_only: bool,
+    /// `--squash`: stage the result without committing or recording a merge.
+    pub squash: bool,
+    /// `--no-commit`: stop before committing so the result can be reviewed.
+    pub no_commit: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MergeOutcome {
+    Merged,
+    /// The merge stopped on conflicts and is waiting to be resolved.
+    Conflicted,
+}
+
 /// How to resume a stopped operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SequencerAdvance {
@@ -884,6 +904,18 @@ pub trait GitRepository: Send + Sync {
     /// Reports the multi-step operation the repository is in the middle of, if
     /// any, so the UI can say why the repository looks the way it does.
     fn sequencer_state(&self) -> BoxFuture<'_, Option<SequencerState>>;
+
+    /// Merges `branch` into the current branch.
+    ///
+    /// Returns `Ok(())` when the merge completes and when it stops on
+    /// conflicts alike: a stopped merge is a state to resolve, not a failure,
+    /// and the sequencer banner reports it.
+    fn merge(
+        &self,
+        branch: String,
+        options: MergeOptions,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>>;
 
     /// Abandons the operation in progress, returning the repository to where it
     /// stood before it started.
@@ -2460,6 +2492,63 @@ impl GitRepository for RealGitRepository {
     ) -> BoxFuture<'_, Result<()>> {
     fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
     fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+    fn merge(
+        &self,
+        branch: String,
+        options: MergeOptions,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>> {
+        let git_binary = self.git_binary_in_worktree();
+        let git_dir = self.git_dir.clone();
+
+        self.executor
+            .spawn(async move {
+                let git_binary = git_binary?;
+                let mut args = vec!["merge".to_string()];
+                if options.no_fast_forward {
+                    args.push("--no-ff".into());
+                }
+                if options.fast_forward_only {
+                    args.push("--ff-only".into());
+                }
+                if options.squash {
+                    args.push("--squash".into());
+                }
+                if options.no_commit {
+                    args.push("--no-commit".into());
+                }
+                args.push(branch);
+
+                let output = git_binary
+                    .build_command(&args)
+                    .envs(env.iter())
+                    // A merge commit needs a message, and git would otherwise
+                    // open an editor and never return.
+                    .env("GIT_EDITOR", "true")
+                    .output()
+                    .await?;
+
+                if output.status.success() {
+                    return anyhow::Ok(MergeOutcome::Merged);
+                }
+
+                // Conflicts are not a failure: git exits non-zero but leaves a
+                // resolvable state behind, marked by MERGE_HEAD.
+                //
+                // Detected by the marker rather than by matching git's message,
+                // which is translated: under a French locale the same conflict
+                // prints "La fusion automatique a échoué".
+                if git_dir.join("MERGE_HEAD").exists() {
+                    return anyhow::Ok(MergeOutcome::Conflicted);
+                }
+
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                anyhow::bail!("Failed to merge:\n{stderr}{stdout}");
+            })
+            .boxed()
+    }
+
     fn sequencer_advance(
         &self,
         operation: SequencerOperation,
@@ -5396,6 +5485,93 @@ mod tests {
             git_command_output(&repo_directory, ["log", "--format=%s", "-n", "2"]),
             "main\ntopic",
             "the rebased commit sits on top of the branch it was rebased onto"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_merge_reports_conflicts_as_state_not_failure(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("shared.txt"), "base\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "base"]);
+
+        // A branch touching a different file merges cleanly.
+        git_command(&repo_directory, ["switch", "-c", "clean"]);
+        fs::write(repo_directory.join("other.txt"), "other\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "other"]);
+
+        // A branch touching the same line will not.
+        git_command(&repo_directory, ["switch", "main"]);
+        git_command(&repo_directory, ["switch", "-c", "conflicting"]);
+        fs::write(repo_directory.join("shared.txt"), "theirs\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "theirs"]);
+
+        git_command(&repo_directory, ["switch", "main"]);
+        fs::write(repo_directory.join("shared.txt"), "ours\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "ours"]);
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+        let env = Arc::new(test_commit_envs());
+
+        assert_eq!(
+            repository
+                .merge("clean".to_string(), MergeOptions::default(), env.clone())
+                .await
+                .unwrap(),
+            MergeOutcome::Merged
+        );
+        assert!(repo_directory.join("other.txt").exists());
+        assert_eq!(
+            repository.sequencer_state().await,
+            None,
+            "a completed merge leaves nothing in progress"
+        );
+
+        // The important case: git exits non-zero, but this is a resolvable
+        // state rather than a failure, so it must not surface as an error.
+        assert_eq!(
+            repository
+                .merge(
+                    "conflicting".to_string(),
+                    MergeOptions::default(),
+                    env.clone()
+                )
+                .await
+                .unwrap(),
+            MergeOutcome::Conflicted
+        );
+        assert_eq!(
+            repository.sequencer_state().await.map(|s| s.operation),
+            Some(SequencerOperation::Merge),
+            "the banner takes over from here"
+        );
+
+        repository
+            .sequencer_abort(SequencerOperation::Merge)
+            .await
+            .unwrap();
+
+        // A genuine failure still is one.
+        assert!(
+            repository
+                .merge("no-such-branch".to_string(), MergeOptions::default(), env)
+                .await
+                .is_err()
         );
     }
 

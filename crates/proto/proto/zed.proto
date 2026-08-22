@@ -513,7 +513,9 @@ message Envelope {
     GitCheckoutTag git_checkout_tag = 480;  // current max
     GitSequencerAbort git_sequencer_abort = 480;  // current max
     GitSequencerAbort git_sequencer_abort = 480;
-    GitSequencerAdvance git_sequencer_advance = 481;  // current max
+    GitSequencerAdvance git_sequencer_advance = 481;
+    GitMerge git_merge = 482;
+    GitMergeResponse git_merge_response = 483;  // current max
   }
 
   reserved 87 to 88;

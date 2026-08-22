@@ -143,6 +143,8 @@ actions!(
         CopyBranchName,
         /// Moves focus between the fields of the new-tag modal.
         FocusTagMessage,
+        /// Merges another branch into the current one.
+        Merge,
     ]
 );
 
