@@ -272,6 +272,59 @@ impl sum_tree::SeekTarget<'_, DiffHunkSummary, DiffHunkSummary> for usize {
     }
 }
 
+/// Builds the index-side text for one hunk when only some of its worktree lines
+/// are being staged.
+///
+/// `selected` holds worktree line indices, relative to the hunk. Lines that are
+/// selected are taken from the worktree; every other line keeps whatever the
+/// index already had, so staging one line of a three-line change leaves the
+/// other two unstaged rather than dragging them along.
+///
+/// Within a single change, base and worktree lines are paired by position: an
+/// n-for-n rewrite is the common case, and pairing is what makes "stage just
+/// this line" mean the line the user pointed at. Lines beyond the shorter side
+/// are additions or deletions, taken only when selected.
+pub fn stage_selected_lines(base: &str, worktree: &str, selected: &[u32]) -> String {
+    let input = InternedInput::new(base, worktree);
+    let diff = Diff::compute(Algorithm::Histogram, &input);
+
+    let base_lines: Vec<&str> = base.split_inclusive('\n').collect();
+    let worktree_lines: Vec<&str> = worktree.split_inclusive('\n').collect();
+    let is_selected = |row: u32| selected.contains(&row);
+
+    let mut result = String::with_capacity(worktree.len().max(base.len()));
+    let mut base_cursor = 0usize;
+
+    for change in diff.hunks() {
+        // Unchanged run before this change: identical on both sides.
+        for line in &base_lines[base_cursor..change.before.start as usize] {
+            result.push_str(line);
+        }
+        base_cursor = change.before.end as usize;
+
+        let before = &base_lines[change.before.start as usize..change.before.end as usize];
+        let after = &worktree_lines[change.after.start as usize..change.after.end as usize];
+
+        for offset in 0..before.len().max(after.len()) {
+            let worktree_row = change.after.start + offset as u32;
+            let take_worktree = (offset < after.len()) && is_selected(worktree_row);
+
+            if take_worktree {
+                result.push_str(after[offset]);
+            } else if offset < before.len() {
+                // Not selected: the index keeps the line it already had, which
+                // for a deletion means the line stays staged as present.
+                result.push_str(before[offset]);
+            }
+        }
+    }
+
+    for line in &base_lines[base_cursor..] {
+        result.push_str(line);
+    }
+    result
+}
+
 impl BufferDiffSnapshot {
     #[cfg(test)]
     fn new_sync(
@@ -2424,6 +2477,46 @@ pub fn assert_hunks<ExpectedText, HunkIter>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_stage_selected_lines() {
+        use super::stage_selected_lines;
+
+        // A three-line rewrite, staging only the middle line: the other two
+        // must keep their indexed contents rather than being dragged along.
+        assert_eq!(
+            stage_selected_lines("one\ntwo\nthree\nfour\n", "one\nTWO\nTHREE\nFOUR\n", &[2]),
+            "one\ntwo\nTHREE\nfour\n"
+        );
+
+        // Selecting nothing leaves the index untouched.
+        assert_eq!(
+            stage_selected_lines("one\ntwo\n", "one\nTWO\n", &[]),
+            "one\ntwo\n"
+        );
+
+        // Selecting everything is the same as staging the whole hunk.
+        assert_eq!(
+            stage_selected_lines("one\ntwo\n", "one\nTWO\n", &[1]),
+            "one\nTWO\n"
+        );
+
+        // An added line is only staged when selected.
+        assert_eq!(
+            stage_selected_lines("one\ntwo\n", "one\nadded\ntwo\n", &[1]),
+            "one\nadded\ntwo\n"
+        );
+        assert_eq!(
+            stage_selected_lines("one\ntwo\n", "one\nadded\ntwo\n", &[]),
+            "one\ntwo\n"
+        );
+
+        // A deleted line stays in the index until its removal is selected.
+        assert_eq!(
+            stage_selected_lines("one\ngone\ntwo\n", "one\ntwo\n", &[]),
+            "one\ngone\ntwo\n"
+        );
+    }
+
     use std::{fmt::Write as _, sync::mpsc};
 
     use super::*;

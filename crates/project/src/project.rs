@@ -3355,6 +3355,23 @@ impl Project {
         })
     }
 
+    /// Stages only the worktree lines `rows` covers, leaving the rest of the
+    /// hunks they fall in unstaged.
+    pub fn stage_lines(
+        &mut self,
+        buffer: Entity<Buffer>,
+        unstaged_diff: Entity<BufferDiff>,
+        rows: Vec<u32>,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        if self.is_disconnected(cx) {
+            return Err(anyhow!(ErrorCode::Disconnected));
+        }
+        self.git_store.update(cx, |git_store, cx| {
+            git_store.stage_lines(buffer, unstaged_diff, rows, cx)
+        })
+    }
+
     /// Unstages the worktree changes covered by `worktree_ranges` (in the worktree
     /// buffer's coordinates), acting on the given uncommitted diff. Used by the
     /// uncommitted (gutter) controls.

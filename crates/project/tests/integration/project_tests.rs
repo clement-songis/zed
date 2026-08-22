@@ -11605,6 +11605,73 @@ async fn test_uncommitted_diff_for_buffer(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_staging_a_subset_of_a_hunk(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    // One hunk spanning three changed lines: staging part of it is the case
+    // `git add -p` exists for, and the case that would corrupt the index if the
+    // worktree-to-index mapping were wrong.
+    let committed_contents = "one\ntwo\nthree\nfour\n";
+    let file_contents = "one\nTWO\nTHREE\nFOUR\n";
+
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree(
+        "/dir",
+        json!({
+            ".git": {},
+            "file.txt": file_contents
+        }),
+    )
+    .await;
+    fs.set_head_and_index_for_repo(
+        path!("/dir/.git").as_ref(),
+        &[("file.txt", committed_contents.to_string())],
+    );
+
+    let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/dir/file.txt"), cx)
+        })
+        .await
+        .unwrap();
+    let uncommitted_diff = project
+        .update(cx, |project, cx| {
+            project.open_uncommitted_diff(buffer.clone(), cx)
+        })
+        .await
+        .unwrap();
+    // Stage only the middle changed line.
+    project
+        .update(cx, |project, cx| {
+            let unstaged_diff = uncommitted_diff.read(cx).secondary_diff().unwrap();
+            project.stage_lines(buffer.clone(), unstaged_diff, vec![2], cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let index_text = fs
+        .read_file_sync(path!("/dir/file.txt"))
+        .ok()
+        .and_then(|_| {
+            fs.with_git_state(path!("/dir/.git").as_ref(), false, |state| {
+                state
+                    .index_contents
+                    .get(&git::repository::repo_path("file.txt"))
+                    .map(|contents| String::from_utf8_lossy(contents).into_owned())
+            })
+            .ok()
+            .flatten()
+        })
+        .expect("the index should hold the file");
+
+    assert_eq!(
+        index_text, "one\ntwo\nTHREE\nfour\n",
+        "only the selected line is staged; the lines around it keep their committed contents"
+    );
+}
+
+#[gpui::test]
 async fn test_staging_hunks(cx: &mut gpui::TestAppContext) {
     use DiffHunkSecondaryStatus::*;
     init_test(cx);
