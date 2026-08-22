@@ -512,6 +512,8 @@ message Envelope {
     GitDeleteTag git_delete_tag = 480; // current max
     GitCheckoutTag git_checkout_tag = 480;  // current max
     GitSequencerAbort git_sequencer_abort = 480;  // current max
+    GitSequencerAbort git_sequencer_abort = 480;
+    GitSequencerAdvance git_sequencer_advance = 481;  // current max
   }
 
   reserved 87 to 88;

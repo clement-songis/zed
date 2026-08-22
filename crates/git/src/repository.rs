@@ -655,6 +655,15 @@ impl SequencerOperation {
     }
 }
 
+/// How to resume a stopped operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SequencerAdvance {
+    /// Carry on, committing what is currently staged.
+    Continue,
+    /// Drop the step that stopped and move to the next one.
+    Skip,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SequencerState {
     pub operation: SequencerOperation,
@@ -879,6 +888,15 @@ pub trait GitRepository: Send + Sync {
     /// Abandons the operation in progress, returning the repository to where it
     /// stood before it started.
     fn sequencer_abort(&self, operation: SequencerOperation) -> BoxFuture<'_, Result<()>>;
+
+    /// Resumes the operation in progress, either carrying on with what is
+    /// staged or dropping the current step.
+    fn sequencer_advance(
+        &self,
+        operation: SequencerOperation,
+        step: SequencerAdvance,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>>;
 
     fn delete_branch(
         &self,
@@ -2442,6 +2460,57 @@ impl GitRepository for RealGitRepository {
     ) -> BoxFuture<'_, Result<()>> {
     fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
     fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+    fn sequencer_advance(
+        &self,
+        operation: SequencerOperation,
+        step: SequencerAdvance,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary_in_worktree();
+
+        self.executor
+            .spawn(async move {
+                let git_binary = git_binary?;
+                let subcommand = match operation {
+                    SequencerOperation::Merge => "merge",
+                    SequencerOperation::Rebase | SequencerOperation::RebaseInteractive => "rebase",
+                    SequencerOperation::CherryPick => "cherry-pick",
+                    SequencerOperation::Revert => "revert",
+                    // `git bisect` advances by verdict (good/bad), not by
+                    // continue/skip, so it has no equivalent here.
+                    SequencerOperation::Bisect => {
+                        anyhow::bail!("A bisect is advanced by marking a commit good or bad")
+                    }
+                };
+                let flag = match step {
+                    SequencerAdvance::Continue => "--continue",
+                    SequencerAdvance::Skip => "--skip",
+                };
+                anyhow::ensure!(
+                    !(matches!(operation, SequencerOperation::Merge)
+                        && matches!(step, SequencerAdvance::Skip)),
+                    "A merge has a single step, so there is nothing to skip"
+                );
+
+                let output = git_binary
+                    .build_command(&[subcommand, flag])
+                    // `--continue` creates a commit, which needs an author.
+                    .envs(env.iter())
+                    // Without this git opens an editor for the commit message
+                    // and the command never returns.
+                    .env("GIT_EDITOR", "true")
+                    .output()
+                    .await?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "Failed to continue:\n{}",
+                    String::from_utf8_lossy(&output.stderr),
+                );
+                anyhow::Ok(())
+            })
+            .boxed()
+    }
+
     fn sequencer_abort(&self, operation: SequencerOperation) -> BoxFuture<'_, Result<()>> {
         let git_binary = self.git_binary_in_worktree();
 
@@ -5257,6 +5326,76 @@ mod tests {
                 .await
                 .is_err(),
             "aborting with nothing in progress must report an error"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_sequencer_advance_continue(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("file.txt"), "base\n").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "base"]);
+
+        git_command(&repo_directory, ["switch", "-c", "topic"]);
+        fs::write(repo_directory.join("file.txt"), "topic\n").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "topic"]);
+
+        git_command(&repo_directory, ["switch", "main"]);
+        fs::write(repo_directory.join("file.txt"), "main\n").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "main"]);
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+        let git = repository.git_binary_in_worktree().unwrap();
+        assert!(git.run(&["rebase", "topic"]).await.is_err());
+
+        let operation = repository.sequencer_state().await.unwrap().operation;
+
+        // Resolve the conflict the way a user would, then continue.
+        fs::write(repo_directory.join("file.txt"), "resolved\n").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+
+        repository
+            .sequencer_advance(
+                operation,
+                SequencerAdvance::Continue,
+                Arc::new(test_commit_envs()),
+            )
+            .await
+            .expect("continuing after resolving should succeed");
+
+        assert_eq!(
+            repository.sequencer_state().await,
+            None,
+            "finishing the rebase clears the state"
+        );
+        assert_eq!(
+            git_command_output(&repo_directory, ["branch", "--show-current"]),
+            "main",
+            "the rebase lands back on the branch it started from"
+        );
+        assert_eq!(
+            fs::read_to_string(repo_directory.join("file.txt")).unwrap(),
+            "resolved\n",
+            "the resolution is what got committed"
+        );
+        assert_eq!(
+            git_command_output(&repo_directory, ["log", "--format=%s", "-n", "2"]),
+            "main\ntopic",
+            "the rebased commit sits on top of the branch it was rebased onto"
         );
     }
 

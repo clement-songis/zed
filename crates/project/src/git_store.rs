@@ -38,8 +38,8 @@ use git::{
         CreateWorktreeTarget, DiffStatType, DiffType, FetchOptions, FileHistoryChangedFileSets,
         GitCommitTemplate, GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData,
         LogOrder, LogSource, PushOptions, Remote, RemoteCommandOutput, RepoPath, ResetMode,
-        SearchCommitArgs, SequencerOperation, SequencerState, UpstreamTrackingStatus,
-        Worktree as GitWorktree, delete_branch_flag, is_binary_content,
+        SearchCommitArgs, SequencerAdvance, SequencerOperation, SequencerState,
+        UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag, is_binary_content,
     },
     stash::{GitStash, StashEntry},
     status::{
@@ -941,6 +941,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_delete_tag);
         client.add_entity_request_handler(Self::handle_checkout_tag);
         client.add_entity_request_handler(Self::handle_sequencer_abort);
+        client.add_entity_request_handler(Self::handle_sequencer_advance);
         client.add_entity_request_handler(Self::handle_rename_branch);
         client.add_entity_request_handler(Self::handle_create_remote);
         client.add_entity_request_handler(Self::handle_remove_remote);
@@ -4136,6 +4137,32 @@ impl GitStore {
     async fn handle_checkout_tag(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::GitCheckoutTag>,
+    async fn handle_sequencer_advance(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitSequencerAdvance>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let operation = proto::sequencer_state::Operation::from_i32(envelope.payload.operation)
+            .map(sequencer_operation_from_proto)
+            .context("unknown sequencer operation")?;
+        let step = match proto::git_sequencer_advance::Advance::from_i32(envelope.payload.advance)
+            .context("unknown advance kind")?
+        {
+            proto::git_sequencer_advance::Advance::Continue => SequencerAdvance::Continue,
+            proto::git_sequencer_advance::Advance::Skip => SequencerAdvance::Skip,
+        };
+
+        repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.sequencer_advance(operation, step)
+            })
+            .await??;
+
+        Ok(proto::Ack {})
+    }
+
     async fn handle_sequencer_abort(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::GitSequencerAbort>,
@@ -9608,6 +9635,19 @@ impl Repository {
         self.send_job(
             "create_tag",
             Some(status_msg),
+    pub fn sequencer_advance(
+        &mut self,
+        operation: SequencerOperation,
+        step: SequencerAdvance,
+    ) -> oneshot::Receiver<Result<()>> {
+        let id = self.id;
+        let flag = match step {
+            SequencerAdvance::Continue => "--continue",
+            SequencerAdvance::Skip => "--skip",
+        };
+        self.send_job(
+            "sequencer_advance",
+            Some(format!("git {} {flag}", operation.label().to_lowercase()).into()),
             move |repo, _cx| async move {
                 match repo {
                     RepositoryState::Local(LocalRepositoryState {
@@ -9617,6 +9657,7 @@ impl Repository {
                     }) => {
                         backend
                             .create_tag(tag_name, commit, message, environment)
+                            .sequencer_advance(operation, step, environment)
                             .await
                     }
                     RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
@@ -9656,6 +9697,28 @@ impl Repository {
                                 project_id: project_id.0,
                                 repository_id: id.to_proto(),
                                 tag_name,
+                            .request(proto::GitSequencerAdvance {
+                                project_id: project_id.0,
+                                repository_id: id.to_proto(),
+                                operation: sequencer_operation_to_proto(operation) as i32,
+                                advance: match step {
+                                    SequencerAdvance::Continue => {
+                                        proto::git_sequencer_advance::Advance::Continue
+                                    }
+                                    SequencerAdvance::Skip => {
+                                        proto::git_sequencer_advance::Advance::Skip
+                                    }
+                                } as i32,
+                            })
+                            .await?;
+
+                        Ok(())
+                    }
+                }
+            },
+        )
+    }
+
     pub fn sequencer_abort(
         &mut self,
         operation: SequencerOperation,
