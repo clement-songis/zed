@@ -655,6 +655,19 @@ impl SequencerOperation {
     }
 }
 
+/// The three sides of a 3-way merge for a single path, as git records them in
+/// the index while the path is unmerged.
+///
+/// A side is `None` when git has no entry for it — a file added on both
+/// branches has no base, a modify/delete conflict is missing one side — or when
+/// the blob is not valid UTF-8.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnmergedStages {
+    pub base: Option<String>,
+    pub ours: Option<String>,
+    pub theirs: Option<String>,
+}
+
 /// Options for `git merge`, mirroring the flags they map to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MergeOptions {
@@ -889,6 +902,9 @@ pub trait GitRepository: Send + Sync {
     /// Reports the multi-step operation the repository is in the middle of, if
     /// any, so the UI can say why the repository looks the way it does.
     fn sequencer_state(&self) -> BoxFuture<'_, Option<SequencerState>>;
+
+    /// Reads the three sides git records in the index for an unmerged path.
+    fn load_unmerged_stages(&self, path: RepoPath) -> BoxFuture<'_, UnmergedStages>;
 
     /// Applies `commits` on top of the current branch.
     ///
@@ -2497,6 +2513,42 @@ impl GitRepository for RealGitRepository {
                     .run(&["branch", "-m", &branch, &new_name])
                     .await?;
                 anyhow::Ok(())
+            })
+            .boxed()
+    }
+
+    fn load_unmerged_stages(&self, path: RepoPath) -> BoxFuture<'_, UnmergedStages> {
+        let git_binary = self.git_binary_in_worktree();
+
+        self.executor
+            .spawn(async move {
+                let Ok(git_binary) = git_binary else {
+                    return UnmergedStages::default();
+                };
+                // Stage numbers are git's: 1 is the common ancestor, 2 "ours",
+                // 3 "theirs". A missing stage exits non-zero, which is how a
+                // modify/delete conflict reports the side that is gone.
+                let read_stage = async |stage: u8| {
+                    let output = git_binary
+                        .build_command(&[
+                            "show".to_string(),
+                            format!(":{stage}:{}", path.as_unix_str()),
+                        ])
+                        .output()
+                        .await
+                        .ok()?;
+                    output
+                        .status
+                        .success()
+                        .then(|| String::from_utf8(output.stdout).ok())
+                        .flatten()
+                };
+
+                UnmergedStages {
+                    base: read_stage(1).await,
+                    ours: read_stage(2).await,
+                    theirs: read_stage(3).await,
+                }
             })
             .boxed()
     }
@@ -5673,6 +5725,74 @@ mod tests {
             repository.cherry_pick(vec![], false, env).await.is_err(),
             "an empty selection is a caller error, not a no-op"
         );
+    }
+
+    #[gpui::test]
+    async fn test_load_unmerged_stages(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("both.txt"), "base\n").unwrap();
+        fs::write(repo_directory.join("deleted.txt"), "base\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "base"]);
+
+        git_command(&repo_directory, ["switch", "-c", "theirs"]);
+        fs::write(repo_directory.join("both.txt"), "theirs\n").unwrap();
+        fs::remove_file(repo_directory.join("deleted.txt")).unwrap();
+        git_command(&repo_directory, ["add", "-A"]);
+        git_command(&repo_directory, ["commit", "-m", "theirs"]);
+
+        git_command(&repo_directory, ["switch", "main"]);
+        fs::write(repo_directory.join("both.txt"), "ours\n").unwrap();
+        fs::write(repo_directory.join("deleted.txt"), "ours\n").unwrap();
+        git_command(&repo_directory, ["add", "-A"]);
+        git_command(&repo_directory, ["commit", "-m", "ours"]);
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            repository
+                .merge(
+                    "theirs".to_string(),
+                    MergeOptions::default(),
+                    Arc::new(test_commit_envs())
+                )
+                .await
+                .unwrap(),
+            MergeOutcome::Conflicted
+        );
+
+        // A file changed on both sides has all three stages.
+        let stages = repository.load_unmerged_stages(repo_path("both.txt")).await;
+        assert_eq!(stages.base.as_deref(), Some("base\n"));
+        assert_eq!(stages.ours.as_deref(), Some("ours\n"));
+        assert_eq!(stages.theirs.as_deref(), Some("theirs\n"));
+
+        // A modify/delete conflict is missing the side that deleted it, which
+        // is the case a three-pane view has to render as an absence.
+        let stages = repository
+            .load_unmerged_stages(repo_path("deleted.txt"))
+            .await;
+        assert_eq!(stages.base.as_deref(), Some("base\n"));
+        assert_eq!(stages.ours.as_deref(), Some("ours\n"));
+        assert_eq!(stages.theirs, None, "the deleting side has no stage 3");
+
+        // A path that is not conflicted has no stages at all.
+        let stages = repository
+            .load_unmerged_stages(repo_path("does-not-exist.txt"))
+            .await;
+        assert_eq!(stages, UnmergedStages::default());
     }
 
     async fn test_change_branch_creates_local_tracking_branch_from_remote(cx: &mut TestAppContext) {
