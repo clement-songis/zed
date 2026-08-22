@@ -1303,6 +1303,15 @@ struct DetailPanelCommitMessage {
     scroll_handle: ScrollHandle,
 }
 
+/// Whether a commit's author address identifies the current user.
+///
+/// Email comparison is case-insensitive: git records whatever case the author
+/// configured, so the same person can appear under several spellings. An unknown
+/// local identity must never match, otherwise every commit would be highlighted.
+fn authored_by_local_user(local_author_email: Option<&str>, author_email: &str) -> bool {
+    local_author_email.is_some_and(|local| author_email.eq_ignore_ascii_case(local))
+}
+
 pub struct GitGraph {
     focus_handle: FocusHandle,
     search_state: SearchState,
@@ -1331,6 +1340,12 @@ pub struct GitGraph {
     changed_files_view_mode: ChangedFilesViewMode,
     changed_files_expanded_dirs: HashMap<RepoPath, bool>,
     pending_select_sha: Option<Oid>,
+    /// Lowercased `user.email` for this repository, used to highlight the
+    /// current user's own commits. `None` until resolved, or when it cannot be
+    /// determined (no identity configured, or a remote project where reading
+    /// git config is not supported).
+    local_author_email: Option<SharedString>,
+    _local_author_email_task: Option<Task<()>>,
 }
 
 impl GitGraph {
@@ -1577,10 +1592,65 @@ impl GitGraph {
             changed_files_view_mode: ChangedFilesViewMode::default(),
             changed_files_expanded_dirs: HashMap::default(),
             pending_select_sha: None,
+            local_author_email: None,
+            _local_author_email_task: None,
         };
 
         this.fetch_initial_graph_data(cx);
+        this.load_local_author_email(cx);
         this
+    }
+
+    /// Resolves the identity used to highlight the current user's own commits.
+    ///
+    /// Reads `user.email` from within the repository so that a per-repository
+    /// override wins over the global one — using the global identity alone would
+    /// mislabel commits in repositories where the user commits under a different
+    /// address. Remote projects don't support reading git config, so highlighting
+    /// is simply skipped there rather than falling back to a possibly wrong
+    /// identity.
+    fn load_local_author_email(&mut self, cx: &mut Context<Self>) {
+        // Everything, including reading the workspace, happens inside the spawned
+        // task: this runs from `GitGraph::new`, which is itself called while the
+        // workspace is being updated, and reading an entity mid-update panics.
+        self._local_author_email_task = Some(cx.spawn(async move |this, cx| {
+            let config = this
+                .update(cx, |this, cx| {
+                    let work_directory = this
+                        .get_repository(cx)?
+                        .read(cx)
+                        .snapshot()
+                        .work_directory_abs_path;
+                    let project = this
+                        .workspace
+                        .read_with(cx, |workspace, _| workspace.project().clone())
+                        .ok()?;
+                    Some(project.read(cx).git_config(
+                        work_directory,
+                        vec!["user.email".to_string()],
+                        cx,
+                    ))
+                })
+                .ok()
+                .flatten();
+            let Some(config) = config else {
+                return;
+            };
+
+            let email = config.await.ok();
+            this.update(cx, |this, cx| {
+                this.local_author_email = email.and_then(|email| {
+                    let email = email.trim().to_ascii_lowercase();
+                    (!email.is_empty()).then(|| SharedString::from(email))
+                });
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn is_authored_by_local_user(&self, author_email: &str) -> bool {
+        authored_by_local_user(self.local_author_email.as_deref(), author_email)
     }
 
     fn on_repository_event(
@@ -1830,13 +1900,17 @@ impl GitGraph {
                 let subject: SharedString;
                 let author_name: SharedString;
 
+                let authored_by_local_user;
+
                 if let CommitDataState::Loaded(ref data) = data {
                     subject = data.subject.clone();
                     author_name = data.author_name.clone();
                     formatted_time = format_timestamp(data.commit_timestamp);
+                    authored_by_local_user = self.is_authored_by_local_user(&data.author_email);
                 } else {
                     subject = "Loading…".into();
                     author_name = "".into();
+                    authored_by_local_user = false;
                 }
 
                 let accent_colors = cx.theme().accents();
@@ -1920,7 +1994,14 @@ impl GitGraph {
                         )
                         .into_any_element(),
                     column_label(formatted_time.into()),
-                    column_label(author_name),
+                    if authored_by_local_user {
+                        Label::new(author_name)
+                            .color(Color::Accent)
+                            .truncate()
+                            .into_any_element()
+                    } else {
+                        column_label(author_name)
+                    },
                     column_label(short_sha.into()),
                 ]
             })
@@ -2291,6 +2372,10 @@ impl GitGraph {
                 .contains_key(&repo_id)
         {
             self.repo_id = repo_id;
+            // The identity is per-repository, so it has to be resolved again
+            // rather than carried over from the repository we just left.
+            self.local_author_email = None;
+            self.load_local_author_email(cx);
             self.invalidate_state(cx);
         }
     }
@@ -4735,6 +4820,30 @@ fn generate_parents_from_oids(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_authored_by_local_user() {
+        use super::authored_by_local_user;
+
+        assert!(authored_by_local_user(
+            Some("me@example.com"),
+            "me@example.com"
+        ));
+        assert!(
+            authored_by_local_user(Some("me@example.com"), "Me@Example.COM"),
+            "the same address in a different case is still the same author"
+        );
+        assert!(!authored_by_local_user(
+            Some("me@example.com"),
+            "someone-else@example.com"
+        ));
+
+        // An unresolved identity must not highlight anything, and a commit with
+        // no recorded author must not be attributed to the local user.
+        assert!(!authored_by_local_user(None, "me@example.com"));
+        assert!(!authored_by_local_user(None, ""));
+        assert!(!authored_by_local_user(Some("me@example.com"), ""));
+    }
+
     use super::*;
     use anyhow::{Context, Result, bail};
     use collections::{HashMap, HashSet};

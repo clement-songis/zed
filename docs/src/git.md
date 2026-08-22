@@ -126,6 +126,12 @@ See [Configuring Zed](./configuring-zed.md) for more about the Settings Editor.
 
 You can switch between modes at any time. Your preference applies to [Project Diff](#project-diff), [File History](#file-history), and [Stash Diff View](#stash-diff-view). These diff views function as [multibuffers](./multibuffers.md), allowing you to edit multiple excerpts simultaneously.
 
+## Git Graph
+
+The Git Graph shows the commit history of the repository as a graph, with the branches, tags, and files touched by each commit.
+
+Commits you authored are shown with their author name in the accent color, so your own work stands out when scanning a shared history. Zed uses the `user.email` configured for the repository, so a per-repository override takes precedence over your global identity. Highlighting is skipped when no identity is configured, and in remote projects, where Zed cannot read the repository's git config.
+
 ## File History
 
 File History shows the commit history for an individual file. Each entry displays the commit's author, timestamp, and message. Selecting a commit opens a diff view filtered to show only the changes made to that file in that commit.
