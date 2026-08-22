@@ -2980,6 +2980,70 @@ impl GitPanel {
         self.prompt_for_stash_message(StashKind::Tracked, window, cx);
     }
 
+    /// Copies the uncommitted changes as a patch.
+    pub fn copy_patch(&mut self, _: &git::CopyPatch, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo) = self.active_repository.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let patch = repo
+                .update(cx, |repo, cx| repo.diff(DiffType::HeadToWorktree, cx))
+                .await??;
+            this.update(cx, |this, cx| {
+                if patch.trim().is_empty() {
+                    this.show_info_toast("No changes to copy".to_string(), cx);
+                    return;
+                }
+                cx.write_to_clipboard(ClipboardItem::new_string(patch));
+                this.show_info_toast("Patch copied".to_string(), cx);
+            })
+        })
+        .detach_and_log_err(cx);
+    }
+
+    /// Applies the clipboard's contents as a patch.
+    ///
+    /// Runs `--check` first: `git apply` is not atomic across files, so a patch
+    /// that fails halfway would leave some files changed and others not.
+    pub fn apply_patch_from_clipboard(
+        &mut self,
+        _: &git::ApplyPatchFromClipboard,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.active_repository.clone() else {
+            return;
+        };
+        let Some(patch) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            self.show_info_toast("Clipboard is empty".to_string(), cx);
+            return;
+        };
+        if patch.trim().is_empty() {
+            self.show_info_toast("Clipboard is empty".to_string(), cx);
+            return;
+        }
+
+        cx.spawn(async move |this, cx| {
+            let checked = repo
+                .update(cx, |repo, _| repo.apply_patch(patch.clone(), true))
+                .await?;
+            if let Err(error) = checked {
+                return this.update(cx, |this, cx| {
+                    this.show_error_toast("apply patch", error, cx);
+                });
+            }
+
+            let applied = repo
+                .update(cx, |repo, _| repo.apply_patch(patch, false))
+                .await?;
+            this.update(cx, |this, cx| match applied {
+                Ok(()) => this.show_info_toast("Patch applied".to_string(), cx),
+                Err(error) => this.show_error_toast("apply patch", error, cx),
+            })
+        })
+        .detach_and_log_err(cx);
+    }
+
     pub fn stash_staged(&mut self, _: &StashStaged, window: &mut Window, cx: &mut Context<Self>) {
         self.prompt_for_stash_message(StashKind::Staged, window, cx);
     }
@@ -5614,6 +5678,19 @@ impl GitPanel {
             return;
         };
         show_error_toast(workspace, action, e, cx)
+    }
+
+    fn show_info_toast(&self, message: String, cx: &mut App) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            struct GitInfoToast;
+            workspace.show_toast(
+                workspace::Toast::new(NotificationId::unique::<GitInfoToast>(), message).autohide(),
+                cx,
+            );
+        });
     }
 
     fn show_git_job_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -9025,6 +9102,8 @@ impl Render for GitPanel {
                     .on_action(cx.listener(Self::stash_tracked))
                     .on_action(cx.listener(Self::stash_staged))
                     .on_action(cx.listener(Self::stash_selected))
+                    .on_action(cx.listener(Self::copy_patch))
+                    .on_action(cx.listener(Self::apply_patch_from_clipboard))
                     .on_action(cx.listener(Self::stash_pop))
             })
             .on_action(cx.listener(Self::collapse_selected_entry))

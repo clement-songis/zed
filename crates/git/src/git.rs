@@ -151,6 +151,10 @@ actions!(
         Rebase,
         /// Shows the git commands Zed has run in this repository.
         ShowCommandLog,
+        /// Copies the uncommitted changes as a patch.
+        CopyPatch,
+        /// Applies a patch from the clipboard to the working tree.
+        ApplyPatchFromClipboard,
     ]
 );
 

@@ -1060,6 +1060,10 @@ impl GitRepository for FakeGitRepository {
         self.with_state_async(true, move |state| {
             if state.sequencer_state.take().is_none() {
                 bail!("no operation in progress");
+    fn apply_patch(&self, patch: String, _check_only: bool) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |_state| {
+            if patch.trim().is_empty() {
+                bail!("empty patch");
             }
             Ok(())
         })

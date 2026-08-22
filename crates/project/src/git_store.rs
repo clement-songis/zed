@@ -959,6 +959,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_rebase);
         client.add_entity_request_handler(Self::handle_cherry_pick);
         client.add_entity_request_handler(Self::handle_revert);
+        client.add_entity_request_handler(Self::handle_apply_patch);
         client.add_entity_request_handler(Self::handle_rename_branch);
         client.add_entity_request_handler(Self::handle_create_remote);
         client.add_entity_request_handler(Self::handle_remove_remote);
@@ -4320,6 +4321,9 @@ impl GitStore {
     async fn handle_sequencer_advance(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::GitSequencerAdvance>,
+    async fn handle_apply_patch(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitApplyPatch>,
         mut cx: AsyncApp,
     ) -> Result<proto::Ack> {
         let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
@@ -4372,6 +4376,11 @@ impl GitStore {
         repository_handle
             .update(&mut cx, |repository_handle, _| {
                 repository_handle.sequencer_abort(operation)
+        let payload = envelope.payload;
+
+        repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.apply_patch(payload.patch, payload.check_only)
             })
             .await??;
 
@@ -10102,6 +10111,29 @@ impl Repository {
                             })
                             .await?;
 
+    pub fn apply_patch(
+        &mut self,
+        patch: String,
+        check_only: bool,
+    ) -> oneshot::Receiver<Result<()>> {
+        let id = self.id;
+        self.send_job(
+            "apply_patch",
+            Some("git apply".into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.apply_patch(patch, check_only).await
+                    }
+                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                        client
+                            .request(proto::GitApplyPatch {
+                                project_id: project_id.0,
+                                repository_id: id.to_proto(),
+                                patch,
+                                check_only,
+                            })
+                            .await?;
                         Ok(())
                     }
                 }

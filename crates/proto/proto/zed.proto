@@ -522,6 +522,7 @@ message Envelope {
     GitCherryPickResponse git_cherry_pick_response = 487;
     GitRevert git_revert = 488;
     GitRevertResponse git_revert_response = 489;  // current max
+    GitApplyPatch git_apply_patch = 480;  // current max
   }
 
   reserved 87 to 88;
