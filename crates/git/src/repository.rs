@@ -4286,6 +4286,18 @@ impl GitBinary {
             command.env("GIT_INDEX_FILE", index_file_path);
         }
         command.envs(&self.envs);
+        // Git translates its messages, and several of Zed's are parsed rather
+        // than merely displayed: the pull summary counts files from "Updating"
+        // and "Already up to date", a rebase pull is recognised by "Successfully
+        // rebased", and a conflicted merge by "Automatic merge failed". Under a
+        // French locale those read "Mise à jour", "Déjà à jour", "Rebasage
+        // réussi" and "La fusion automatique a échoué", and every one of those
+        // parsers silently takes the wrong branch.
+        //
+        // LC_ALL rather than LC_MESSAGES, because LC_ALL overrides LC_MESSAGES
+        // for users who export it. Non-ASCII paths and commit messages are
+        // unaffected: git passes those through as bytes.
+        command.env("LC_ALL", "C");
         command
     }
 }
@@ -5980,6 +5992,43 @@ mod tests {
         assert!(
             !output.status.success(),
             "hooksPath should NOT be overridden for trusted repos"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_build_command_forces_c_locale_for_messages(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        git_init_repo(dir.path());
+
+        let git = GitBinary::new(
+            PathBuf::from("git"),
+            dir.path().to_path_buf(),
+            dir.path().join(".git"),
+            cx.executor(),
+            true,
+        )
+        // A user who exports LC_ALL would otherwise win over LC_MESSAGES, which
+        // is exactly the case this guards.
+        .envs(HashMap::from_iter([(
+            "LC_ALL".to_string(),
+            "fr_FR.UTF-8".to_string(),
+        )]));
+
+        let output = git
+            .build_command(&["merge", "no-such-branch"])
+            .output()
+            .await
+            .expect("git merge should run");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        assert!(
+            combined.contains("not something we can merge"),
+            "git messages must stay in English so the output parsers keep working, got: {combined}"
         );
     }
 
