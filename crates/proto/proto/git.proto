@@ -815,6 +815,10 @@ message SearchCommits {
   GitLogSource log_source = 3;
   string query = 4;
   bool case_sensitive = 5;
+  optional string author = 6;
+  optional string since = 7;
+  optional string until = 8;
+  bool regex = 9;
 }
 
 message SearchCommitsResponse {

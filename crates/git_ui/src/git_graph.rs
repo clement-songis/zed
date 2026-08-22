@@ -520,6 +520,73 @@ impl QueryState {
     }
 }
 
+/// Splits a search box query into git log filters and the free text to grep for.
+///
+/// Filters are written inline as `author:`, `since:` and `until:` qualifiers,
+/// with `regex:` switching the remaining text from a literal to a pattern. A
+/// single field keeps the filters composable and avoids a row of widgets above
+/// the graph; quoting lets a value contain spaces, which dates like
+/// `since:"2 weeks ago"` need.
+///
+/// Anything git understands for a date is passed through untouched: git accepts
+/// both absolute dates and relative expressions, and reimplementing that here
+/// would only narrow what works.
+fn parse_search_query(query: &str, case_sensitive: bool) -> SearchCommitArgs {
+    let mut args = SearchCommitArgs {
+        query: SharedString::default(),
+        case_sensitive,
+        author: None,
+        since: None,
+        until: None,
+        regex: false,
+    };
+    let mut free_text = Vec::new();
+
+    for token in split_query_tokens(query) {
+        match token.split_once(':') {
+            Some(("author", value)) if !value.is_empty() => {
+                args.author = Some(SharedString::from(value.to_owned()))
+            }
+            Some(("since", value)) if !value.is_empty() => {
+                args.since = Some(SharedString::from(value.to_owned()))
+            }
+            Some(("until", value)) if !value.is_empty() => {
+                args.until = Some(SharedString::from(value.to_owned()))
+            }
+            Some(("regex", "")) => args.regex = true,
+            // Not a qualifier we know: a commit message may well contain a
+            // colon, so this belongs in the text to search for.
+            _ => free_text.push(token),
+        }
+    }
+
+    args.query = SharedString::from(free_text.join(" "));
+    args
+}
+
+/// Splits on whitespace, except inside double quotes, and strips the quotes.
+fn split_query_tokens(query: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+
+    for character in query.chars() {
+        match character {
+            '"' => in_quotes = !in_quotes,
+            c if c.is_whitespace() && !in_quotes => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
 struct SearchState {
     case_sensitive: bool,
     editor: Entity<Editor>,
@@ -2032,10 +2099,7 @@ impl GitGraph {
         repo.update(cx, |repo, cx| {
             repo.search_commits(
                 self.log_source.clone(),
-                SearchCommitArgs {
-                    query: query.clone(),
-                    case_sensitive: self.search_state.case_sensitive,
-                },
+                parse_search_query(&query, self.search_state.case_sensitive),
                 request_tx,
                 cx,
             );
@@ -4708,6 +4772,39 @@ fn generate_parents_from_oids(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_parse_search_query() {
+        use super::parse_search_query;
+
+        // A bare query is just text to grep for.
+        let args = parse_search_query("fix crash", false);
+        assert_eq!(args.query.as_ref(), "fix crash");
+        assert_eq!(args.author, None);
+        assert!(!args.regex);
+
+        // Qualifiers are lifted out; what is left stays the search text.
+        let args = parse_search_query("author:alice fix crash", false);
+        assert_eq!(args.author.as_deref(), Some("alice"));
+        assert_eq!(args.query.as_ref(), "fix crash");
+
+        // Quoting lets a value hold spaces, which relative dates need.
+        let args = parse_search_query(r#"since:"2 weeks ago" until:yesterday"#, false);
+        assert_eq!(args.since.as_deref(), Some("2 weeks ago"));
+        assert_eq!(args.until.as_deref(), Some("yesterday"));
+        assert_eq!(args.query.as_ref(), "", "no free text is left over");
+
+        // `regex:` is a switch, not a value.
+        let args = parse_search_query("regex: ^fix", false);
+        assert!(args.regex);
+        assert_eq!(args.query.as_ref(), "^fix");
+
+        // A colon in a commit message must not be mistaken for a qualifier,
+        // which would silently drop it from the search.
+        let args = parse_search_query("git_ui: add a thing", false);
+        assert_eq!(args.query.as_ref(), "git_ui: add a thing");
+        assert_eq!(args.author, None);
+    }
+
     use super::*;
     use anyhow::{Context, Result, bail};
     use collections::{HashMap, HashSet};

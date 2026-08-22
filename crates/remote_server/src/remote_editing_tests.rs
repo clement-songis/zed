@@ -2859,6 +2859,10 @@ async fn test_remote_search_commits_streams_proto_chunks(
             }),
             query: "needle".to_string(),
             case_sensitive: true,
+            author: None,
+            since: None,
+            until: None,
+            regex: false,
         })
         .await
         .expect("search commits stream should start");
