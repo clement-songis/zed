@@ -982,6 +982,34 @@ impl GitRepository for FakeGitRepository {
             state.current_branch_name = None;
             Ok(())
         })
+    fn cherry_pick(
+        &self,
+        commits: Vec<String>,
+        _record_origin: bool,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>> {
+        self.with_state_async(true, move |_state| {
+            if commits.is_empty() {
+                bail!("No commits to cherry-pick");
+            }
+            Ok(MergeOutcome::Merged)
+        })
+    }
+
+    fn revert(
+        &self,
+        commits: Vec<String>,
+        _mainline: Option<u32>,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>> {
+        self.with_state_async(true, move |_state| {
+            if commits.is_empty() {
+                bail!("No commits to revert");
+            }
+            Ok(MergeOutcome::Merged)
+        })
+    }
+
     fn rebase(
         &self,
         upstream: String,

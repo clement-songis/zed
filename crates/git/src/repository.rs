@@ -912,6 +912,28 @@ pub trait GitRepository: Send + Sync {
     /// any, so the UI can say why the repository looks the way it does.
     fn sequencer_state(&self) -> BoxFuture<'_, Option<SequencerState>>;
 
+    /// Applies `commits` on top of the current branch.
+    ///
+    /// `record_origin` maps to `-x`, appending the source commit to each
+    /// message — the convention when cherry-picking between public branches.
+    fn cherry_pick(
+        &self,
+        commits: Vec<String>,
+        record_origin: bool,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>>;
+
+    /// Creates commits undoing `commits`.
+    ///
+    /// `mainline` maps to `-m`, naming which parent of a merge commit to treat
+    /// as the line being kept; reverting a merge is ambiguous without it.
+    fn revert(
+        &self,
+        commits: Vec<String>,
+        mainline: Option<u32>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>>;
+
     /// Rebases the current branch onto `upstream`.
     ///
     /// `onto` replays only the commits after it, mapping to `--onto`. Like
@@ -2512,6 +2534,87 @@ impl GitRepository for RealGitRepository {
     ) -> BoxFuture<'_, Result<()>> {
     fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
     fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+    fn cherry_pick(
+        &self,
+        commits: Vec<String>,
+        record_origin: bool,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>> {
+        let git_binary = self.git_binary_in_worktree();
+        let git_dir = self.git_dir.clone();
+
+        self.executor
+            .spawn(async move {
+                let git_binary = git_binary?;
+                anyhow::ensure!(!commits.is_empty(), "No commits to cherry-pick");
+                let mut args = vec!["cherry-pick".to_string()];
+                if record_origin {
+                    args.push("-x".into());
+                }
+                args.extend(commits);
+
+                let output = git_binary
+                    .build_command(&args)
+                    .envs(env.iter())
+                    .env("GIT_EDITOR", "true")
+                    .output()
+                    .await?;
+
+                if output.status.success() {
+                    return anyhow::Ok(MergeOutcome::Merged);
+                }
+                if git_dir.join("CHERRY_PICK_HEAD").exists() {
+                    return anyhow::Ok(MergeOutcome::Conflicted);
+                }
+
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                anyhow::bail!("Failed to cherry-pick:\n{stderr}{stdout}");
+            })
+            .boxed()
+    }
+
+    fn revert(
+        &self,
+        commits: Vec<String>,
+        mainline: Option<u32>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>> {
+        let git_binary = self.git_binary_in_worktree();
+        let git_dir = self.git_dir.clone();
+
+        self.executor
+            .spawn(async move {
+                let git_binary = git_binary?;
+                anyhow::ensure!(!commits.is_empty(), "No commits to revert");
+                let mut args = vec!["revert".to_string()];
+                if let Some(mainline) = mainline {
+                    args.push("-m".into());
+                    args.push(mainline.to_string());
+                }
+                args.extend(commits);
+
+                let output = git_binary
+                    .build_command(&args)
+                    .envs(env.iter())
+                    .env("GIT_EDITOR", "true")
+                    .output()
+                    .await?;
+
+                if output.status.success() {
+                    return anyhow::Ok(MergeOutcome::Merged);
+                }
+                if git_dir.join("REVERT_HEAD").exists() {
+                    return anyhow::Ok(MergeOutcome::Conflicted);
+                }
+
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                anyhow::bail!("Failed to revert:\n{stderr}{stdout}");
+            })
+            .boxed()
+    }
+
     fn rebase(
         &self,
         upstream: String,
@@ -5742,6 +5845,100 @@ mod tests {
                 .await
                 .is_err(),
             "an unknown branch is a genuine failure"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_cherry_pick_and_revert(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("shared.txt"), "base\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "base"]);
+
+        git_command(&repo_directory, ["switch", "-c", "source"]);
+        fs::write(repo_directory.join("picked.txt"), "picked\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "a commit worth picking"]);
+        let picked_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
+
+        fs::write(repo_directory.join("shared.txt"), "source\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "conflicting change"]);
+        let conflicting_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
+
+        git_command(&repo_directory, ["switch", "main"]);
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+        let env = Arc::new(test_commit_envs());
+
+        assert_eq!(
+            repository
+                .cherry_pick(vec![picked_sha.clone()], true, env.clone())
+                .await
+                .unwrap(),
+            MergeOutcome::Merged
+        );
+        assert!(repo_directory.join("picked.txt").exists());
+        assert!(
+            git_command_output(&repo_directory, ["log", "--format=%B", "-n", "1"])
+                .contains("cherry picked from commit"),
+            "-x should record where the commit came from"
+        );
+
+        // Reverting it undoes the file without rewriting history.
+        assert_eq!(
+            repository
+                .revert(
+                    vec![git_command_output(&repo_directory, ["rev-parse", "HEAD"])],
+                    None,
+                    env.clone()
+                )
+                .await
+                .unwrap(),
+            MergeOutcome::Merged
+        );
+        assert!(
+            !repo_directory.join("picked.txt").exists(),
+            "the revert commit undoes the change"
+        );
+
+        // A conflicting cherry-pick is a state to resolve, not a failure.
+        fs::write(repo_directory.join("shared.txt"), "main\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "diverging change"]);
+
+        assert_eq!(
+            repository
+                .cherry_pick(vec![conflicting_sha], false, env.clone())
+                .await
+                .unwrap(),
+            MergeOutcome::Conflicted
+        );
+        assert_eq!(
+            repository.sequencer_state().await.map(|s| s.operation),
+            Some(SequencerOperation::CherryPick),
+            "the banner takes over from here"
+        );
+        repository
+            .sequencer_abort(SequencerOperation::CherryPick)
+            .await
+            .unwrap();
+
+        assert!(
+            repository.cherry_pick(vec![], false, env).await.is_err(),
+            "an empty selection is a caller error, not a no-op"
         );
     }
 

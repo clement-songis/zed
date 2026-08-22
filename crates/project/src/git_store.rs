@@ -945,6 +945,8 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_sequencer_advance);
         client.add_entity_request_handler(Self::handle_merge);
         client.add_entity_request_handler(Self::handle_rebase);
+        client.add_entity_request_handler(Self::handle_cherry_pick);
+        client.add_entity_request_handler(Self::handle_revert);
         client.add_entity_request_handler(Self::handle_rename_branch);
         client.add_entity_request_handler(Self::handle_create_remote);
         client.add_entity_request_handler(Self::handle_remove_remote);
@@ -4140,6 +4142,46 @@ impl GitStore {
     async fn handle_checkout_tag(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::GitCheckoutTag>,
+    async fn handle_cherry_pick(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitCherryPick>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::GitCherryPickResponse> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let payload = envelope.payload;
+
+        let outcome = repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.cherry_pick(payload.commits, payload.record_origin)
+            })
+            .await??;
+
+        Ok(proto::GitCherryPickResponse {
+            conflicted: outcome == MergeOutcome::Conflicted,
+        })
+    }
+
+    async fn handle_revert(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitRevert>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::GitRevertResponse> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let payload = envelope.payload;
+
+        let outcome = repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.revert(payload.commits, payload.mainline)
+            })
+            .await??;
+
+        Ok(proto::GitRevertResponse {
+            conflicted: outcome == MergeOutcome::Conflicted,
+        })
+    }
+
     async fn handle_rebase(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::GitRebase>,
@@ -9688,6 +9730,84 @@ impl Repository {
         self.send_job(
             "create_tag",
             Some(status_msg),
+    pub fn cherry_pick(
+        &mut self,
+        commits: Vec<String>,
+        record_origin: bool,
+    ) -> oneshot::Receiver<Result<MergeOutcome>> {
+        let id = self.id;
+        self.send_job(
+            "cherry_pick",
+            Some(format!("git cherry-pick {}", commits.join(" ")).into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => {
+                        backend
+                            .cherry_pick(commits, record_origin, environment)
+                            .await
+                    }
+                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                        let response = client
+                            .request(proto::GitCherryPick {
+                                project_id: project_id.0,
+                                repository_id: id.to_proto(),
+                                commits,
+                                record_origin,
+                            })
+                            .await?;
+
+                        Ok(if response.conflicted {
+                            MergeOutcome::Conflicted
+                        } else {
+                            MergeOutcome::Merged
+                        })
+                    }
+                }
+            },
+        )
+    }
+
+    pub fn revert(
+        &mut self,
+        commits: Vec<String>,
+        mainline: Option<u32>,
+    ) -> oneshot::Receiver<Result<MergeOutcome>> {
+        let id = self.id;
+        self.send_job(
+            "revert",
+            Some(format!("git revert {}", commits.join(" ")).into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => backend.revert(commits, mainline, environment).await,
+                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                        let response = client
+                            .request(proto::GitRevert {
+                                project_id: project_id.0,
+                                repository_id: id.to_proto(),
+                                commits,
+                                mainline,
+                            })
+                            .await?;
+
+                        Ok(if response.conflicted {
+                            MergeOutcome::Conflicted
+                        } else {
+                            MergeOutcome::Merged
+                        })
+                    }
+                }
+            },
+        )
+    }
+
     pub fn rebase(
         &mut self,
         upstream: String,

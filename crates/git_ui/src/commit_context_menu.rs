@@ -114,6 +114,15 @@ pub(crate) fn commit_context_menu(
                         repository,
                         workspace.clone(),
                         window,
+            .entry("Cherry-Pick", None, {
+                let repository = repository.clone();
+                let workspace = workspace.clone();
+                move |_window, cx| {
+                    crate::apply_commit(
+                        SharedString::from(sha.to_string()),
+                        false,
+                        repository.clone(),
+                        workspace.clone(),
                         cx,
                     );
                 }
@@ -168,6 +177,17 @@ pub(crate) fn commit_context_menu(
                         });
                     }
                     menu
+            .entry("Revert", None, {
+                let repository = repository.clone();
+                let workspace = workspace.clone();
+                move |_window, cx| {
+                    crate::apply_commit(
+                        SharedString::from(sha.to_string()),
+                        true,
+                        repository.clone(),
+                        workspace.clone(),
+                        cx,
+                    );
                 }
             })
             .entry(
