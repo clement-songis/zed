@@ -1,6 +1,7 @@
 pub use crate::commit_context_menu::{
     CopyCommitSha, CopyCommitTag, CreateBranchFromCommit, OpenCommitView,
 };
+pub use crate::commit_context_menu::{CopyCommitSha, CopyCommitTag, CreateTag, OpenCommitView};
 use crate::{
     commit_context_menu::{CommitContextMenuData, CommitContextMenuSource, commit_context_menu},
     commit_tooltip::CommitAvatar,
@@ -2448,6 +2449,9 @@ impl GitGraph {
     fn create_branch_from_selected_commit(
         &mut self,
         _: &CreateBranchFromCommit,
+    fn create_tag_at_selected_commit(
+        &mut self,
+        _: &CreateTag,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2461,6 +2465,7 @@ impl GitGraph {
             return;
         };
         crate::create_branch_from_commit(
+        crate::create_tag_at_commit(
             SharedString::from(commit.data.sha.to_string()),
             repository,
             self.workspace.clone(),
@@ -4164,6 +4169,7 @@ impl Render for GitGraph {
                 this.open_selected_commit_view(window, cx);
             }))
             .on_action(cx.listener(Self::create_branch_from_selected_commit))
+            .on_action(cx.listener(Self::create_tag_at_selected_commit))
             .on_action(cx.listener(Self::copy_selected_commit_sha))
             .on_action(cx.listener(Self::copy_selected_commit_tag))
             .on_action(cx.listener(Self::cancel))

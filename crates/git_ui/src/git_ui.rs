@@ -565,6 +565,16 @@ struct CreateBranchFromCommitModal {
 impl CreateBranchFromCommitModal {
     fn new(
         base: SharedString,
+struct CreateTagModal {
+    commit: SharedString,
+    name_editor: Entity<Editor>,
+    message_editor: Entity<Editor>,
+    repo: Entity<Repository>,
+}
+
+impl CreateTagModal {
+    fn new(
+        commit: SharedString,
         repo: Entity<Repository>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -575,6 +585,22 @@ impl CreateBranchFromCommitModal {
             editor
         });
         Self { base, editor, repo }
+        let name_editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("Tag name…", window, cx);
+            editor
+        });
+        let message_editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("Message (optional)…", window, cx);
+            editor
+        });
+        Self {
+            commit,
+            name_editor,
+            message_editor,
+            repo,
+        }
     }
 
     fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
@@ -583,6 +609,25 @@ impl CreateBranchFromCommitModal {
 
     fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
         let name = branch_picker::normalize_branch_name(&self.editor.read(cx).text(cx));
+    fn focus_next_field(
+        &mut self,
+        _: &git::FocusTagMessage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .name_editor
+            .focus_handle(cx)
+            .contains_focused(window, cx)
+        {
+            self.message_editor.focus_handle(cx).focus(window, cx);
+        } else {
+            self.name_editor.focus_handle(cx).focus(window, cx);
+        }
+    }
+
+    fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.name_editor.read(cx).text(cx).trim().to_string();
         if name.is_empty() {
             // Leave the modal open rather than silently doing nothing.
             return;
@@ -593,6 +638,15 @@ impl CreateBranchFromCommitModal {
         cx.spawn(async move |_, cx| {
             match repo
                 .update(cx, |repo, _| repo.create_branch(name, Some(base)))
+        let message = self.message_editor.read(cx).text(cx).trim().to_string();
+        // An empty message means a lightweight tag rather than an annotated one.
+        let message = (!message.is_empty()).then_some(message);
+
+        let repo = self.repo.clone();
+        let commit = self.commit.to_string();
+        cx.spawn(async move |_, cx| {
+            match repo
+                .update(cx, |repo, _| repo.create_tag(name, Some(commit), message))
                 .await
             {
                 Ok(Ok(())) => Ok(()),
@@ -601,6 +655,7 @@ impl CreateBranchFromCommitModal {
             }
         })
         .detach_and_prompt_err("Failed to create branch", window, cx, |e, _, _| {
+        .detach_and_prompt_err("Failed to create tag", window, cx, |e, _, _| {
             Some(e.to_string())
         });
         cx.emit(DismissEvent);
@@ -621,6 +676,21 @@ impl Render for CreateBranchFromCommitModal {
             .key_context("CreateBranchFromCommitModal")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
+impl EventEmitter<DismissEvent> for CreateTagModal {}
+impl ModalView for CreateTagModal {}
+impl Focusable for CreateTagModal {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.name_editor.focus_handle(cx)
+    }
+}
+
+impl Render for CreateTagModal {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .key_context("CreateTagModal")
+            .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::confirm))
+            .on_action(cx.listener(Self::focus_next_field))
             .elevation_2(cx)
             .w(rems(34.))
             .child(
@@ -640,6 +710,23 @@ impl Render for CreateBranchFromCommitModal {
             .child(
                 div().px_3().pb_3().w_full().child(
                     Label::new("The new branch will be checked out.")
+                    .child(Icon::new(IconName::Bookmark).size(IconSize::XSmall))
+                    .child(
+                        Headline::new(format!("New Tag at {}", self.commit))
+                            .size(HeadlineSize::XSmall),
+                    ),
+            )
+            .child(div().px_3().pb_1().w_full().child(self.name_editor.clone()))
+            .child(
+                div()
+                    .px_3()
+                    .pb_1()
+                    .w_full()
+                    .child(self.message_editor.clone()),
+            )
+            .child(
+                div().px_3().pb_3().w_full().child(
+                    Label::new("Without a message, a lightweight tag is created.")
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 ),
@@ -651,6 +738,9 @@ impl Render for CreateBranchFromCommitModal {
 /// committish (a SHA, tag, or branch name).
 pub(crate) fn create_branch_from_commit(
     base: SharedString,
+/// Opens a modal to create a tag at `commit`, which may be any committish.
+pub(crate) fn create_tag_at_commit(
+    commit: SharedString,
     repo: Entity<Repository>,
     workspace: WeakEntity<Workspace>,
     window: &mut Window,
@@ -663,6 +753,10 @@ pub(crate) fn create_branch_from_commit(
             });
         })
         .log_err();
+                CreateTagModal::new(commit, repo, window, cx)
+            });
+        })
+        .ok();
 }
 
 fn copy_branch_name(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
