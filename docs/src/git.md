@@ -345,6 +345,11 @@ Alongside it, **Continue** resumes the operation with whatever is currently stag
 The banner carries an **Abort** button, which abandons the operation and returns the repository to where it stood before it started. Zed confirms first, because aborting discards any conflicts you have already resolved and there is no reflog entry to recover them from.
 
 The banner reports what git itself reports. Note that since Git 2.26 a plain `git rebase` runs through the interactive machinery, so `git status` and Zed both describe it as an interactive rebase.
+## Comparing Against a Commit
+
+Right-click a commit and choose **Compare with Working Tree** to see everything that changed between it and your current files, as a single diff.
+
+For a commit on the current branch this reads as "what has happened since here". Zed uses the merge base between that commit and your working tree, so comparing against a commit on a different branch shows what diverged rather than a raw difference.
 
 ## Merge Conflicts
 
