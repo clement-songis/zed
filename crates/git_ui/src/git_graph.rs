@@ -1,4 +1,6 @@
-pub use crate::commit_context_menu::{CopyCommitSha, CopyCommitTag, OpenCommitView};
+pub use crate::commit_context_menu::{
+    CopyCommitSha, CopyCommitTag, CreateBranchFromCommit, OpenCommitView,
+};
 use crate::{
     commit_context_menu::{CommitContextMenuData, CommitContextMenuSource, commit_context_menu},
     commit_tooltip::CommitAvatar,
@@ -2358,6 +2360,30 @@ impl GitGraph {
         cx.write_to_clipboard(ClipboardItem::new_string(commit.data.sha.to_string()));
     }
 
+    fn create_branch_from_selected_commit(
+        &mut self,
+        _: &CreateBranchFromCommit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(selected_entry_index) = self.selected_entry_idx else {
+            return;
+        };
+        let Some(commit) = self.graph_data.commits.get(selected_entry_index) else {
+            return;
+        };
+        let Some(repository) = self.get_repository(cx) else {
+            return;
+        };
+        crate::create_branch_from_commit(
+            SharedString::from(commit.data.sha.to_string()),
+            repository,
+            self.workspace.clone(),
+            window,
+            cx,
+        );
+    }
+
     fn copy_selected_commit_sha(
         &mut self,
         _: &CopyCommitSha,
@@ -4052,6 +4078,7 @@ impl Render for GitGraph {
             .on_action(cx.listener(|this, _: &OpenCommitView, window, cx| {
                 this.open_selected_commit_view(window, cx);
             }))
+            .on_action(cx.listener(Self::create_branch_from_selected_commit))
             .on_action(cx.listener(Self::copy_selected_commit_sha))
             .on_action(cx.listener(Self::copy_selected_commit_tag))
             .on_action(cx.listener(Self::cancel))

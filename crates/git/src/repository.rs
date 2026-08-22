@@ -4762,6 +4762,54 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_create_branch_from_commit_sha(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("file.txt"), "first").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "first"]);
+        let first_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
+
+        fs::write(repo_directory.join("file.txt"), "second").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "second"]);
+        let second_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
+        assert_ne!(first_sha, second_sha);
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+
+        // The branch picker only ever passes a branch name as the base; creating a
+        // branch from the Git Graph passes a raw commit SHA instead.
+        repository
+            .create_branch("from-first".to_string(), Some(first_sha.clone()))
+            .await
+            .unwrap();
+
+        let git = repository.git_binary_in_worktree().unwrap();
+        assert_eq!(
+            git.run(&["branch", "--show-current"]).await.unwrap(),
+            "from-first",
+            "creating a branch should also check it out"
+        );
+        assert_eq!(
+            git_command_output(&repo_directory, ["rev-parse", "HEAD"]),
+            first_sha,
+            "the new branch should start at the requested commit, not at HEAD"
+        );
+    }
+
+    #[gpui::test]
     async fn test_change_branch_creates_local_tracking_branch_from_remote(cx: &mut TestAppContext) {
         disable_git_global_config();
         cx.executor().allow_parking();
