@@ -147,6 +147,8 @@ actions!(
         Merge,
         /// Rebases the current branch onto another one.
         Rebase,
+        /// Shows the git commands Zed has run in this repository.
+        ShowCommandLog,
     ]
 );
 

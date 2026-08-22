@@ -133,6 +133,21 @@ pub fn init(cx: &mut App) {
             },
         );
 
+        workspace.register_action(|workspace, _: &git::ShowCommandLog, window, cx| {
+            let Some(repository) = workspace.project().read(cx).active_repository(cx) else {
+                return;
+            };
+            let records = repository
+                .read(cx)
+                .command_log()
+                .map(|record| (record.command.clone(), record.duration))
+                .collect::<Vec<_>>();
+            workspace.toggle_modal(window, cx, |_window, cx| CommandLogModal {
+                records,
+                focus_handle: cx.focus_handle(),
+            });
+        });
+
         workspace.register_action(|workspace, _: &zed_actions::git::Worktree, window, cx| {
             let focused_dock = workspace.focused_dock_position(window, cx);
             let project = workspace.project().clone();
@@ -696,6 +711,34 @@ impl Render for CreateTagModal {
             .on_action(cx.listener(Self::focus_next_field))
             .elevation_2(cx)
             .w(rems(34.))
+struct CommandLogModal {
+    records: Vec<(SharedString, std::time::Duration)>,
+    focus_handle: FocusHandle,
+}
+
+impl CommandLogModal {
+    fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(DismissEvent);
+    }
+}
+
+impl EventEmitter<DismissEvent> for CommandLogModal {}
+impl ModalView for CommandLogModal {}
+impl Focusable for CommandLogModal {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for CommandLogModal {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .key_context("CommandLogModal")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::cancel))
+            .elevation_2(cx)
+            .w(rems(48.))
+            .max_h(rems(32.))
             .child(
                 h_flex()
                     .px_3()
@@ -894,6 +937,45 @@ pub(crate) fn apply_commit(
         })
     })
     .detach_and_log_err(cx);
+}
+
+                    .gap_1p5()
+                    .child(Icon::new(IconName::Terminal).size(IconSize::XSmall))
+                    .child(Headline::new("Git Commands").size(HeadlineSize::XSmall)),
+            )
+            .child(if self.records.is_empty() {
+                div()
+                    .px_3()
+                    .pb_3()
+                    .child(
+                        Label::new("No git commands have run yet.")
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .into_any_element()
+            } else {
+                v_flex()
+                    .id("git-command-log")
+                    .px_3()
+                    .pb_3()
+                    .gap_0p5()
+                    .overflow_y_scroll()
+                    // Most recent first: the command that explains what just
+                    // happened is the one to read.
+                    .children(self.records.iter().rev().map(|(command, duration)| {
+                        h_flex()
+                            .gap_2()
+                            .justify_between()
+                            .child(Label::new(command.clone()).size(LabelSize::Small))
+                            .child(
+                                Label::new(format!("{} ms", duration.as_millis()))
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            )
+                    }))
+                    .into_any_element()
+            })
+    }
 }
 
 fn copy_branch_name(workspace: &mut Workspace, cx: &mut Context<Workspace>) {

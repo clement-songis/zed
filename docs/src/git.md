@@ -350,6 +350,11 @@ The banner reports what git itself reports. Note that since Git 2.26 a plain `gi
 Right-click a commit and choose **Compare with Working Tree** to see everything that changed between it and your current files, as a single diff.
 
 For a commit on the current branch this reads as "what has happened since here". Zed uses the merge base between that commit and your working tree, so comparing against a commit on a different branch shows what diverged rather than a raw difference.
+## Seeing What Zed Ran
+
+{#action git::ShowCommandLog} lists the git commands Zed has run in the active repository, newest first, with how long each took.
+
+Useful when the repository ends up somewhere unexpected: it shows what actually ran rather than what the UI implied. Only commands are listed — internal bookkeeping is left out — and the last 200 are kept.
 
 ## Merge Conflicts
 

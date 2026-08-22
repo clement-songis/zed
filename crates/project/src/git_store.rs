@@ -567,6 +567,17 @@ pub struct JobInfo {
     pub message: SharedString,
 }
 
+/// One finished git command, kept so the user can see what Zed actually ran.
+#[derive(Clone, Debug)]
+pub struct GitCommandRecord {
+    pub command: SharedString,
+    pub duration: Duration,
+}
+
+/// How many finished commands to remember. Enough to explain a surprising
+/// repository state, small enough not to grow without bound.
+const COMMAND_LOG_CAPACITY: usize = 200;
+
 struct CommitDataHandler {
     _task: Task<()>,
     commit_data_request: async_channel::Sender<Oid>,
@@ -615,6 +626,7 @@ pub struct Repository {
     job_sender: mpsc::UnboundedSender<GitJob>,
     _worker_task: Task<()>,
     active_jobs: HashMap<JobId, JobInfo>,
+    command_log: VecDeque<GitCommandRecord>,
     job_debug_queue: job_debug_queue::GitJobDebugQueue,
     pending_ops: SumTree<PendingOps>,
     job_id: JobId,
@@ -6550,6 +6562,11 @@ impl Repository {
         self.snapshot.clone()
     }
 
+    /// The git commands this repository has run, most recent last.
+    pub fn command_log(&self) -> impl Iterator<Item = &GitCommandRecord> {
+        self.command_log.iter()
+    }
+
     pub fn pending_ops(&self) -> impl Iterator<Item = PendingOps> + '_ {
         self.pending_ops.iter().cloned()
     }
@@ -6659,6 +6676,7 @@ impl Repository {
             job_sender: mpsc::unbounded().0,
             job_id: 0,
             active_jobs: Default::default(),
+            command_log: Default::default(),
             job_debug_queue: job_debug_queue::GitJobDebugQueue::new(),
             initial_graph_data: Default::default(),
             commit_data: Default::default(),
@@ -6707,6 +6725,7 @@ impl Repository {
             askpass_delegates: Default::default(),
             latest_askpass_id: 0,
             active_jobs: Default::default(),
+            command_log: Default::default(),
             job_debug_queue: job_debug_queue::GitJobDebugQueue::new(),
             job_id: 0,
             initial_graph_data: Default::default(),
@@ -6989,7 +7008,18 @@ impl Repository {
                                 job_id,
                                 job_debug_queue::CompletedJobStatus::Finished,
                             );
-                            this.active_jobs.remove(&job_id);
+                            if let Some(info) = this.active_jobs.remove(&job_id) {
+                                // Only jobs that named a command are logged:
+                                // the rest are internal bookkeeping the user
+                                // has no reason to see.
+                                if this.command_log.len() == COMMAND_LOG_CAPACITY {
+                                    this.command_log.pop_front();
+                                }
+                                this.command_log.push_back(GitCommandRecord {
+                                    command: info.message,
+                                    duration: info.start.elapsed(),
+                                });
+                            }
                             cx.notify();
                         })
                         .ok();
