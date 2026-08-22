@@ -403,6 +403,12 @@ Zed provides a stash picker accessible via {#action git::ViewStash} or from the 
 - **Pop stashes**: Apply stash changes and remove the stash entry from the list
 - **Drop stashes**: Delete unwanted stash entries without applying them
 
+### Stashing Selected Files
+
+{#action git::StashSelected} stashes only the files you have marked in the Git Panel, or the one under the cursor when nothing is marked.
+
+Zed asks for a message first, as it does for the other stash actions. With nothing selected the action does nothing, rather than falling back to stashing everything.
+
 ### Quick Stash Operations
 
 For faster workflows, Zed provides direct actions to work with the most recent stash:
