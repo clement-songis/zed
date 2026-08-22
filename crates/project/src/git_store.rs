@@ -3984,6 +3984,10 @@ impl GitStore {
         let search_args = SearchCommitArgs {
             query: SharedString::from(envelope.payload.query),
             case_sensitive: envelope.payload.case_sensitive,
+            author: envelope.payload.author.map(SharedString::from),
+            since: envelope.payload.since.map(SharedString::from),
+            until: envelope.payload.until.map(SharedString::from),
+            regex: envelope.payload.regex,
         };
 
         let (request_tx, request_rx) = async_channel::unbounded();
@@ -7077,6 +7081,10 @@ impl Repository {
                             log_source: Some(log_source_to_proto(&log_source)),
                             query: search_args.query.to_string(),
                             case_sensitive: search_args.case_sensitive,
+                            author: search_args.author.as_ref().map(ToString::to_string),
+                            since: search_args.since.as_ref().map(ToString::to_string),
+                            until: search_args.until.as_ref().map(ToString::to_string),
+                            regex: search_args.regex,
                         })
                         .await;
 

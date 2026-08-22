@@ -727,6 +727,16 @@ impl LogSource {
 pub struct SearchCommitArgs {
     pub query: SharedString,
     pub case_sensitive: bool,
+    /// Restrict to commits whose author matches, as `git log --author`.
+    pub author: Option<SharedString>,
+    /// Restrict to commits after / before a date, as understood by
+    /// `git log --since` / `--until`: git accepts both absolute dates and
+    /// relative expressions like "2 weeks ago", so this is passed through
+    /// rather than parsed here.
+    pub since: Option<SharedString>,
+    pub until: Option<SharedString>,
+    /// Treat `query` as a regular expression instead of a literal string.
+    pub regex: bool,
 }
 
 pub fn commit_hash_search_query(query: &str) -> Option<&str> {
@@ -3381,8 +3391,12 @@ impl GitRepository for RealGitRepository {
             let hash_query = commit_hash_search_query(search_args.query.as_str())
                 .map(|query| query.to_ascii_lowercase());
 
-            if hash_query.is_none() {
-                args.push("--fixed-strings");
+            // A bare query is optional once other filters are present: asking
+            // for "everything by this author" is a legitimate search.
+            if hash_query.is_none() && !search_args.query.is_empty() {
+                if !search_args.regex {
+                    args.push("--fixed-strings");
+                }
 
                 if !search_args.case_sensitive {
                     args.push("--regexp-ignore-case");
@@ -3390,6 +3404,19 @@ impl GitRepository for RealGitRepository {
 
                 args.push("--grep");
                 args.push(search_args.query.as_str());
+            }
+
+            if let Some(author) = search_args.author.as_ref() {
+                args.push("--author");
+                args.push(author.as_str());
+            }
+            if let Some(since) = search_args.since.as_ref() {
+                args.push("--since");
+                args.push(since.as_str());
+            }
+            if let Some(until) = search_args.until.as_ref() {
+                args.push("--until");
+                args.push(until.as_str());
             }
 
             args.extend(log_source_args.iter().map(|arg| arg.as_ref()));

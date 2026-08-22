@@ -108,6 +108,21 @@ See [Configuring Zed](./configuring-zed.md) for more about the Settings Editor.
 
 You can switch between modes at any time. Your preference applies to [Project Diff](#project-diff), [File History](#file-history), and [Stash Diff View](#stash-diff-view). These diff views function as [multibuffers](./multibuffers.md), allowing you to edit multiple excerpts simultaneously.
 
+### Filtering the Git Graph
+
+The Git Graph's search box accepts filters written inline alongside the text to search for:
+
+| Qualifier | Effect |
+| --- | --- |
+| `author:alice` | only commits by a matching author |
+| `since:"2 weeks ago"` | only commits after a date |
+| `until:yesterday` | only commits before a date |
+| `regex:` | treat the remaining text as a regular expression |
+
+Quote a value to include spaces. Dates are passed to git untouched, so anything `git log --since` understands works, absolute or relative.
+
+Text that merely contains a colon — a commit message like `git_ui: add a thing` — is searched for as written, not read as a filter.
+
 ## File History
 
 File History shows the commit history for an individual file. Each entry displays the commit's author, timestamp, and message. Selecting a commit opens a diff view filtered to show only the changes made to that file in that commit.
