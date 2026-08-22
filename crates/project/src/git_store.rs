@@ -936,6 +936,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_create_branch);
         client.add_entity_request_handler(Self::handle_create_tag);
         client.add_entity_request_handler(Self::handle_delete_tag);
+        client.add_entity_request_handler(Self::handle_checkout_tag);
         client.add_entity_request_handler(Self::handle_rename_branch);
         client.add_entity_request_handler(Self::handle_create_remote);
         client.add_entity_request_handler(Self::handle_remove_remote);
@@ -4128,6 +4129,9 @@ impl GitStore {
     async fn handle_delete_tag(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::GitDeleteTag>,
+    async fn handle_checkout_tag(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitCheckoutTag>,
         mut cx: AsyncApp,
     ) -> Result<proto::Ack> {
         let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
@@ -4143,6 +4147,10 @@ impl GitStore {
         repository_handle
             .update(&mut cx, |repository_handle, _| {
                 repository_handle.delete_tag(tag_name)
+
+        repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.checkout_tag(tag_name)
             })
             .await??;
 
@@ -9567,6 +9575,19 @@ impl Repository {
                     RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
                         client
                             .request(proto::GitDeleteTag {
+    pub fn checkout_tag(&mut self, tag_name: String) -> oneshot::Receiver<Result<()>> {
+        let id = self.id;
+        self.send_job(
+            "checkout_tag",
+            Some(format!("git checkout --detach refs/tags/{tag_name}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.checkout_tag(tag_name).await
+                    }
+                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                        client
+                            .request(proto::GitCheckoutTag {
                                 project_id: project_id.0,
                                 repository_id: id.to_proto(),
                                 tag_name,

@@ -510,6 +510,7 @@ message Envelope {
     BlameBufferAtRevisionResponse blame_buffer_at_revision_response = 479;
     GitCreateTag git_create_tag = 480; // current max
     GitDeleteTag git_delete_tag = 480; // current max
+    GitCheckoutTag git_checkout_tag = 480;  // current max
   }
 
   reserved 87 to 88;

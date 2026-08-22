@@ -831,6 +831,8 @@ pub trait GitRepository: Send + Sync {
     ) -> BoxFuture<'_, Result<()>>;
     /// Deletes a local tag. Fails if no such tag exists.
     fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>>;
+    /// Checks out a tag, leaving HEAD detached at the commit it points to.
+    fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>>;
 
     fn delete_branch(
         &self,
@@ -2393,6 +2395,7 @@ impl GitRepository for RealGitRepository {
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
     fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+    fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
         let git_binary = self.git_binary_in_worktree();
 
         self.executor
@@ -2417,12 +2420,19 @@ impl GitRepository for RealGitRepository {
                     .envs(env.iter())
                 let output = git_binary
                     .build_command(&["tag", "-d", &name])
+                // `refs/tags/` disambiguates: a branch and a tag may share a
+                // name, and a bare name would resolve to the branch. `--detach`
+                // makes the resulting state explicit rather than implied.
+                let tag_ref = format!("refs/tags/{name}");
+                let output = git_binary
+                    .build_command(&["checkout", "--detach", &tag_ref])
                     .output()
                     .await?;
                 anyhow::ensure!(
                     output.status.success(),
                     "Failed to create tag:\n{}",
                     "Failed to delete tag:\n{}",
+                    "Failed to check out tag:\n{}",
                     String::from_utf8_lossy(&output.stderr),
                 );
                 anyhow::Ok(())
@@ -4826,6 +4836,8 @@ mod tests {
     async fn test_delete_tag(cx: &mut TestAppContext) {
     #[gpui::test]
     async fn test_push_tag_refspec(cx: &mut TestAppContext) {
+    #[gpui::test]
+    async fn test_checkout_tag_detaches_and_disambiguates(cx: &mut TestAppContext) {
         disable_git_global_config();
         cx.executor().allow_parking();
 
@@ -4860,6 +4872,23 @@ mod tests {
 
         let repository = RealGitRepository::new(
             &clone_directory.join(".git"),
+        let tagged_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
+        git_command(&repo_directory, ["tag", "release"]);
+
+        // A branch with the same name as the tag, pointing somewhere else: a bare
+        // `git checkout release` would land on the branch, not the tag.
+        git_command(&repo_directory, ["branch", "release"]);
+        fs::write(repo_directory.join("file.txt"), "second").unwrap();
+        git_command(&repo_directory, ["add", "file.txt"]);
+        git_command(&repo_directory, ["commit", "-m", "second"]);
+        git_command(&repo_directory, ["branch", "-f", "release", "HEAD"]);
+        // Explicit ref: a bare `rev-parse release` is itself ambiguous and
+        // resolves to the tag, which is the very confusion under test.
+        let branch_sha = git_command_output(&repo_directory, ["rev-parse", "refs/heads/release"]);
+        assert_ne!(tagged_sha, branch_sha);
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
             None,
             Some("git".into()),
             cx.executor(),
@@ -4983,6 +5012,28 @@ mod tests {
             git_command_output(&remote_directory, ["rev-parse", "v1.0.0^{commit}"]),
             git_command_output(&clone_directory, ["rev-parse", "v1.0.0^{commit}"]),
             "the pushed tag should point at the same commit"
+        );
+        repository
+            .checkout_tag("release".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git_command_output(&repo_directory, ["rev-parse", "HEAD"]),
+            tagged_sha,
+            "the tag must win over the same-named branch"
+        );
+        assert_eq!(
+            git_command_output(&repo_directory, ["branch", "--show-current"]),
+            "",
+            "checking out a tag must leave HEAD detached"
+        );
+
+        assert!(
+            repository
+                .checkout_tag("does-not-exist".to_string())
+                .await
+                .is_err()
         );
     }
 

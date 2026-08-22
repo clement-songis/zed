@@ -966,6 +966,13 @@ impl GitRepository for FakeGitRepository {
             if !state.tags.remove(&name) {
                 bail!("tag '{name}' not found");
             }
+    fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            if !state.tags.contains(&name) {
+                bail!("tag '{name}' not found");
+            }
+            // A detached HEAD has no branch name.
+            state.current_branch_name = None;
             Ok(())
         })
     }

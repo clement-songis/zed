@@ -244,6 +244,13 @@ This deletes the local tag only; a tag already pushed to a remote stays there.
 ### Pushing a Tag
 
 Creating a tag only creates it locally. To publish it, right-click the commit it points at and choose **Push Tag**. When the repository has several remotes, Zed asks which one to use; with a single remote it pushes there directly.
+### Checking Out a Tag
+
+To look at the state of the repository at a tag, right-click the commit it points at and choose **Check Out Tag**.
+
+This leaves you on a detached HEAD: commits made from there belong to no branch. Zed says so before proceeding. To get back, switch to a branch, or create one from the current commit.
+
+If a branch and a tag share a name, Zed checks out the tag.
 
 ## Git Worktrees
 

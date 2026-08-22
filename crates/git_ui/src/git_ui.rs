@@ -14,7 +14,7 @@ use git::{
 use gpui::PromptLevel;
 use gpui::{
     App, ClipboardItem, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
+    PromptLevel, SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
 };
 use menu::{Cancel, Confirm};
 use project::git_store::Repository;
@@ -763,6 +763,12 @@ pub(crate) fn create_tag_at_commit(
 /// A deleted tag is only recoverable by someone who still knows the commit it
 /// pointed at, so this always confirms rather than offering an undo.
 pub(crate) fn delete_tag(
+/// Checks out a tag, after confirming.
+///
+/// This leaves the repository on a detached HEAD, which is easy to end up in by
+/// accident and confusing to be in unknowingly, so the prompt names the state
+/// and how to leave it rather than just asking to proceed.
+pub(crate) fn checkout_tag(
     tag_name: SharedString,
     repository: Option<WeakEntity<Repository>>,
     window: &mut Window,
@@ -776,6 +782,12 @@ pub(crate) fn delete_tag(
         &format!("Delete tag {tag_name}?"),
         None,
         &["Delete", "Cancel"],
+        &format!("Check out tag {tag_name}?"),
+        Some(
+            "This leaves you on a detached HEAD: commits you make will not belong to any \
+             branch. Switch to a branch, or create one from here, to get back.",
+        ),
+        &["Check Out", "Cancel"],
         cx,
     );
     window
@@ -794,6 +806,17 @@ pub(crate) fn delete_tag(
                 && let Ok(Err(error)) = deleted.await
             {
                 log::error!("failed to delete tag: {error:#}");
+            let checked_out = cx
+                .update(|_, cx| {
+                    repository.update(cx, |repository, _| {
+                        repository.checkout_tag(tag_name.to_string())
+                    })
+                })
+                .ok();
+            if let Some(checked_out) = checked_out
+                && let Ok(Err(error)) = checked_out.await
+            {
+                log::error!("failed to check out tag: {error:#}");
             }
         })
         .detach();

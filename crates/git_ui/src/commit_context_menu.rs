@@ -204,6 +204,7 @@ pub(crate) fn commit_context_menu(
                     let delete_tag_label = "Delete Tag";
                     let workspace = workspace.clone();
                     let push_tag_label = "Push Tag";
+                    let checkout_tag_label = "Check Out Tag";
 
                     match tag_names.as_slice() {
                         [tag_name] => {
@@ -214,12 +215,24 @@ pub(crate) fn commit_context_menu(
                             })
                         }
                         _ => menu.submenu(delete_tag_label, move |menu, _window, _cx| {
+                            let label = format!("{checkout_tag_label}: {tag_name}");
+                            menu.entry(label, None, move |window, cx| {
+                                crate::checkout_tag(
+                                    tag_name.clone(),
+                                    repository.clone(),
+                                    window,
+                                    cx,
+                                );
+                            })
+                        }
+                        _ => menu.submenu(checkout_tag_label, move |menu, _window, _cx| {
                             let mut menu = menu.fixed_width(COMMIT_TAG_LIST_WIDTH_IN_REMS.into());
 
                             for tag_name in tag_names.clone() {
                                 let repository = repository.clone();
                                 menu = menu.entry(tag_name.clone(), None, move |window, cx| {
                                     crate::delete_tag(
+                                    crate::checkout_tag(
                                         tag_name.clone(),
                                         repository.clone(),
                                         window,
