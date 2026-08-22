@@ -829,6 +829,8 @@ pub trait GitRepository: Send + Sync {
         message: Option<String>,
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>>;
+    /// Deletes a local tag. Fails if no such tag exists.
+    fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>>;
 
     fn delete_branch(
         &self,
@@ -2390,6 +2392,7 @@ impl GitRepository for RealGitRepository {
         message: Option<String>,
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
+    fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
         let git_binary = self.git_binary_in_worktree();
 
         self.executor
@@ -2412,11 +2415,14 @@ impl GitRepository for RealGitRepository {
                 let output = git_binary
                     .build_command(&args)
                     .envs(env.iter())
+                let output = git_binary
+                    .build_command(&["tag", "-d", &name])
                     .output()
                     .await?;
                 anyhow::ensure!(
                     output.status.success(),
                     "Failed to create tag:\n{}",
+                    "Failed to delete tag:\n{}",
                     String::from_utf8_lossy(&output.stderr),
                 );
                 anyhow::Ok(())
@@ -4817,6 +4823,7 @@ mod tests {
     #[gpui::test]
     async fn test_create_branch_from_commit_sha(cx: &mut TestAppContext) {
     async fn test_create_tag_lightweight_and_annotated(cx: &mut TestAppContext) {
+    async fn test_delete_tag(cx: &mut TestAppContext) {
         disable_git_global_config();
         cx.executor().allow_parking();
 
@@ -4834,6 +4841,8 @@ mod tests {
         git_command(&repo_directory, ["commit", "-m", "second"]);
         let second_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
         assert_ne!(first_sha, second_sha);
+        let head_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
+        git_command(&repo_directory, ["tag", "v1.0.0"]);
 
         let repository = RealGitRepository::new(
             &repo_directory.join(".git"),
@@ -4918,6 +4927,21 @@ mod tests {
                 .await
                 .is_err()
         );
+        repository.delete_tag("v1.0.0".to_string()).await.unwrap();
+        assert_eq!(
+            git_command_output(&repo_directory, ["tag", "-l"]),
+            "",
+            "the tag should be gone"
+        );
+        assert_eq!(
+            git_command_output(&repo_directory, ["rev-parse", "HEAD"]),
+            head_sha,
+            "deleting a tag must not move HEAD or touch the commit it pointed at"
+        );
+
+        // Deleting something that isn't there must report an error rather than
+        // silently succeeding.
+        assert!(repository.delete_tag("v1.0.0".to_string()).await.is_err());
     }
 
     #[gpui::test]

@@ -961,6 +961,10 @@ impl GitRepository for FakeGitRepository {
         self.with_state_async(true, move |state| {
             if !state.tags.insert(name.clone()) {
                 bail!("tag '{name}' already exists");
+    fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            if !state.tags.remove(&name) {
+                bail!("tag '{name}' not found");
             }
             Ok(())
         })
