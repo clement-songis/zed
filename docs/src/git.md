@@ -228,6 +228,12 @@ For agent-specific workflows, see [Worktree Isolation](./ai/parallel-agents.md#w
 If your project contains multiple Git repositories (i.e., multi-root folders), Zed creates a linked worktree for each repository when creating a new worktree from the picker.
 Non-Git folders in the same project are included in the new workspace as-is.
 
+## Comparing Against a Commit
+
+Right-click a commit and choose **Compare with Working Tree** to see everything that changed between it and your current files, as a single diff.
+
+For a commit on the current branch this reads as "what has happened since here". Zed uses the merge base between that commit and your working tree, so comparing against a commit on a different branch shows what diverged rather than a raw difference.
+
 ## Merge Conflicts
 
 When you encounter merge conflicts after a merge, rebase, or pull, Zed highlights the conflicting regions in your files and displays resolution buttons above each conflict.

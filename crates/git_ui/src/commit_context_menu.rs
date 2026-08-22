@@ -33,6 +33,30 @@ pub(crate) enum CommitContextMenuSource {
     GitPanel,
 }
 
+/// Opens the branch diff with this commit as the base.
+///
+/// For a commit on the current branch the merge base is the commit itself, so
+/// this reads as "everything that changed since here" — the comparison people
+/// actually reach for, and it reuses the branch diff rather than adding a view.
+fn compare_with_working_tree(
+    sha: SharedString,
+    workspace: &WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    workspace
+        .update(cx, |workspace, cx| {
+            let project = workspace.project().clone();
+            let Some(repository) = project.read(cx).active_repository(cx) else {
+                return;
+            };
+            crate::branch_diff::BranchDiff::deploy_branch_diff_with_base_ref(
+                workspace, project, repository, sha, None, window, cx,
+            );
+        })
+        .ok();
+}
+
 pub(crate) fn commit_context_menu(
     commit: CommitContextMenuData,
     source: CommitContextMenuSource,
@@ -72,6 +96,17 @@ pub(crate) fn commit_context_menu(
                         workspace.clone(),
                         None,
                         None,
+                        window,
+                        cx,
+                    );
+                }
+            })
+            .entry("Compare with Working Tree", None, {
+                let workspace = workspace.clone();
+                move |window, cx| {
+                    compare_with_working_tree(
+                        SharedString::from(sha.to_string()),
+                        &workspace,
                         window,
                         cx,
                     );
