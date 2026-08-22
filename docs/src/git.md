@@ -228,6 +228,12 @@ For agent-specific workflows, see [Worktree Isolation](./ai/parallel-agents.md#w
 If your project contains multiple Git repositories (i.e., multi-root folders), Zed creates a linked worktree for each repository when creating a new worktree from the picker.
 Non-Git folders in the same project are included in the new workspace as-is.
 
+## Seeing What Zed Ran
+
+{#action git::ShowCommandLog} lists the git commands Zed has run in the active repository, newest first, with how long each took.
+
+Useful when the repository ends up somewhere unexpected: it shows what actually ran rather than what the UI implied. Only commands are listed — internal bookkeeping is left out — and the last 200 are kept.
+
 ## Merge Conflicts
 
 When you encounter merge conflicts after a merge, rebase, or pull, Zed highlights the conflicting regions in your files and displays resolution buttons above each conflict.

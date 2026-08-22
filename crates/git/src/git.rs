@@ -139,6 +139,8 @@ actions!(
         AddToGitInfoExclude,
         /// Copies the current branch name to the clipboard.
         CopyBranchName,
+        /// Shows the git commands Zed has run in this repository.
+        ShowCommandLog,
     ]
 );
 
