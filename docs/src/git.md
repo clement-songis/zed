@@ -131,6 +131,20 @@ You can switch between modes at any time. Your preference applies to [Project Di
 The Git Graph shows the commit history of the repository as a graph, with the branches, tags, and files touched by each commit.
 
 Commits you authored are shown with their author name in the accent color, so your own work stands out when scanning a shared history. Zed uses the `user.email` configured for the repository, so a per-repository override takes precedence over your global identity. Highlighting is skipped when no identity is configured, and in remote projects, where Zed cannot read the repository's git config.
+### Filtering the Git Graph
+
+The Git Graph's search box accepts filters written inline alongside the text to search for:
+
+| Qualifier | Effect |
+| --- | --- |
+| `author:alice` | only commits by a matching author |
+| `since:"2 weeks ago"` | only commits after a date |
+| `until:yesterday` | only commits before a date |
+| `regex:` | treat the remaining text as a regular expression |
+
+Quote a value to include spaces. Dates are passed to git untouched, so anything `git log --since` understands works, absolute or relative.
+
+Text that merely contains a colon — a commit message like `git_ui: add a thing` — is searched for as written, not read as a filter.
 
 ## File History
 
