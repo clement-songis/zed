@@ -15,8 +15,8 @@ use git::{
         CreateWorktreeTarget, FetchOptions, FileHistoryChangedFileSets, GRAPH_CHUNK_SIZE,
         GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder, LogSource,
         MergeOptions, MergeOutcome, PushOptions, RefEdit, Remote, RepoPath, ResetMode,
-        SearchCommitArgs, SequencerAdvance, SequencerOperation, SequencerState, Worktree,
-        commit_hash_search_query,
+        SearchCommitArgs, SequencerAdvance, SequencerOperation, SequencerState, UnmergedStages,
+        Worktree, commit_hash_search_query,
     },
     stash::GitStash,
     status::{
@@ -71,6 +71,7 @@ pub struct FakeGitRepositoryState {
     pub current_branch_name: Option<String>,
     pub branches: HashSet<String>,
     pub tags: HashSet<String>,
+    pub unmerged_stages: HashMap<RepoPath, UnmergedStages>,
     pub sequencer_state: Option<SequencerState>,
     /// List of remotes, keys are names and values are URLs
     pub remotes: HashMap<String, String>,
@@ -98,6 +99,7 @@ impl FakeGitRepositoryState {
             current_branch_name: Default::default(),
             branches: Default::default(),
             tags: Default::default(),
+            unmerged_stages: Default::default(),
             sequencer_state: None,
             simulated_index_write_error_message: Default::default(),
             simulated_create_worktree_error: Default::default(),
@@ -982,6 +984,17 @@ impl GitRepository for FakeGitRepository {
             state.current_branch_name = None;
             Ok(())
         })
+    fn load_unmerged_stages(&self, path: RepoPath) -> BoxFuture<'_, UnmergedStages> {
+        let stages = self.with_state_async(false, move |state| {
+            Ok(state
+                .unmerged_stages
+                .get(&path)
+                .cloned()
+                .unwrap_or_default())
+        });
+        async move { stages.await.unwrap_or_default() }.boxed()
+    }
+
     fn cherry_pick(
         &self,
         commits: Vec<String>,
