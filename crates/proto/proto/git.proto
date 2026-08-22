@@ -218,6 +218,10 @@ message GitCheckoutTag {
   uint64 project_id = 1;
   uint64 repository_id = 2;
   string tag_name = 3;
+message GitSequencerAbort {
+  uint64 project_id = 1;
+  uint64 repository_id = 2;
+  SequencerState.Operation operation = 3;
 }
 
 message GitChangeBranch {

@@ -14,8 +14,8 @@ use git::{
         AskPassDelegate, Branch, CommitData, CommitDataReader, CommitDetails, CommitOptions,
         CreateWorktreeTarget, FetchOptions, FileHistoryChangedFileSets, GRAPH_CHUNK_SIZE,
         GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder, LogSource,
-        PushOptions, RefEdit, Remote, RepoPath, ResetMode, SearchCommitArgs, SequencerState,
-        Worktree, commit_hash_search_query,
+        PushOptions, RefEdit, Remote, RepoPath, ResetMode, SearchCommitArgs, SequencerOperation,
+        SequencerState, Worktree, commit_hash_search_query,
     },
     stash::GitStash,
     status::{
@@ -977,6 +977,15 @@ impl GitRepository for FakeGitRepository {
             state.current_branch_name = None;
             Ok(())
         })
+    fn sequencer_abort(&self, _operation: SequencerOperation) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            if state.sequencer_state.take().is_none() {
+                bail!("no operation in progress");
+            }
+            Ok(())
+        })
+    }
+
     fn sequencer_state(&self) -> BoxFuture<'_, Option<SequencerState>> {
         let state = self.with_state_async(false, |state| Ok(state.sequencer_state.clone()));
         async move { state.await.ok().flatten() }.boxed()
