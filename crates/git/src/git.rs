@@ -79,6 +79,8 @@ actions!(
         UnstageAll,
         /// Stashes all changes in the repository, including untracked files.
         StashAll,
+        /// Stashes only the files selected in the git panel.
+        StashSelected,
         /// Stashes tracked changes in the repository, leaving untracked files in place.
         StashTracked,
         /// Stashes staged changes in the repository, leaving unstaged changes in place.

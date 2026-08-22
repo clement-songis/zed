@@ -43,8 +43,8 @@ use git::{
 };
 use git::{
     ExpandCommitEditor, GitHostingProviderRegistry, GitRemote, RestoreTrackedFiles, StageAll,
-    StashAll, StashApply, StashPop, StashStaged, StashTracked, ToggleFillCommitEditor,
-    TrashUntrackedFiles, UnstageAll, ViewFile, parse_git_remote_url,
+    StashAll, StashApply, StashPop, StashSelected, StashStaged, StashTracked,
+    ToggleFillCommitEditor, TrashUntrackedFiles, UnstageAll, ViewFile, parse_git_remote_url,
 };
 use gpui::{
     AbsoluteLength, Action, Anchor, AnyElement, AsyncApp, AsyncWindowContext, ClickEvent,
@@ -206,6 +206,7 @@ enum StashKind {
     All,
     Tracked,
     Staged,
+    Selected,
 }
 
 impl StashKind {
@@ -214,6 +215,7 @@ impl StashKind {
             StashKind::All => "Stash All",
             StashKind::Tracked => "Stash Tracked",
             StashKind::Staged => "Stash Staged",
+            StashKind::Selected => "Stash Selected",
         }
     }
 
@@ -222,6 +224,7 @@ impl StashKind {
             StashKind::All => "stash",
             StashKind::Tracked => "stash tracked",
             StashKind::Staged => "stash staged",
+            StashKind::Selected => "stash selected",
         }
     }
 }
@@ -2949,6 +2952,29 @@ impl GitPanel {
         self.prompt_for_stash_message(StashKind::Staged, window, cx);
     }
 
+    pub fn stash_selected(
+        &mut self,
+        _: &StashSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.prompt_for_stash_message(StashKind::Selected, window, cx);
+    }
+
+    /// The entries the user has marked, or the one under the cursor.
+    fn stashable_selection(&self) -> Vec<RepoPath> {
+        let indexes: Vec<usize> = if self.marked_entries.is_empty() {
+            self.selected_entry.into_iter().collect()
+        } else {
+            self.marked_entries.clone()
+        };
+        indexes
+            .into_iter()
+            .filter_map(|index| self.entries.get(index)?.status_entry())
+            .map(|entry| entry.repo_path.clone())
+            .collect()
+    }
+
     fn prompt_for_stash_message(
         &mut self,
         kind: StashKind,
@@ -2976,6 +3002,12 @@ impl GitPanel {
         let Some(active_repository) = self.active_repository.clone() else {
             return;
         };
+        let selected_paths = self.stashable_selection();
+        // An empty pathspec makes `git stash push` stash everything, which is
+        // the opposite of what "stash the files I picked" should do.
+        if matches!(kind, StashKind::Selected) && selected_paths.is_empty() {
+            return;
+        }
 
         cx.spawn({
             async move |this, cx| {
@@ -2984,6 +3016,7 @@ impl GitPanel {
                         StashKind::All => repo.stash_all(message, cx),
                         StashKind::Tracked => repo.stash_tracked(message, cx),
                         StashKind::Staged => repo.stash_staged(message, cx),
+                        StashKind::Selected => repo.stash_entries(selected_paths, message, cx),
                     })
                     .await;
                 this.update(cx, |this, cx| {
@@ -8523,6 +8556,7 @@ impl Render for GitPanel {
                     .on_action(cx.listener(Self::stash_all))
                     .on_action(cx.listener(Self::stash_tracked))
                     .on_action(cx.listener(Self::stash_staged))
+                    .on_action(cx.listener(Self::stash_selected))
                     .on_action(cx.listener(Self::stash_pop))
             })
             .on_action(cx.listener(Self::collapse_selected_entry))
