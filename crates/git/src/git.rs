@@ -124,6 +124,8 @@ actions!(
         ToggleFillCommitEditor,
         /// Generates a commit message using AI.
         GenerateCommitMessage,
+        /// Reuses the message of a recent commit.
+        CommitMessageHistory,
         /// Initializes a new git repository.
         Init,
         /// Opens all modified files in the editor.

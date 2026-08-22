@@ -192,6 +192,12 @@ Zed offers two commit textareas:
 1. The first one is available right at the bottom of the Git Panel. Hitting {#kb git::Commit} immediately commits all of your staged changes.
 2. The second is available via the action {#action git::ExpandCommitEditor} or via hitting the {#kb git::ExpandCommitEditor} while focused in the Git Panel commit textarea.
 
+### Reusing a Previous Commit Message
+
+{#action git::CommitMessageHistory}, also available as "Reuse Commit Message…" in the commit button's menu, lists the messages of recent commits on the current branch. Picking one puts it in the commit message editor, replacing whatever is there.
+
+Identical messages are listed once, and the list is searchable.
+
 ### Undoing a Commit
 
 As soon as you commit in Zed, in the Git Panel, you'll see a bar right under the commit textarea, which will show the recently submitted commit.
