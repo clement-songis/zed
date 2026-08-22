@@ -160,6 +160,7 @@ pub struct Gutter {
     pub bookmarks: bool,
     pub folds: bool,
     pub git_gutter_width: settings::GitGutterWidth,
+    pub line_staging_checkboxes: bool,
 }
 
 /// Forcefully enable or disable the scrollbar for each axis
@@ -280,6 +281,7 @@ impl Settings for EditorSettings {
                 breakpoints: gutter.breakpoints.unwrap(),
                 folds: gutter.folds.unwrap(),
                 git_gutter_width: gutter.git_gutter_width.unwrap(),
+                line_staging_checkboxes: gutter.line_staging_checkboxes.unwrap(),
             },
             scroll_beyond_last_line: editor.scroll_beyond_last_line.unwrap(),
             vertical_scroll_margin: editor.vertical_scroll_margin.unwrap() as f64,

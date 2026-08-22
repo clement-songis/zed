@@ -85,6 +85,12 @@ This applies to the Project Diff, branch diffs, the staged and unstaged changes 
 
 Single-file diffs are controlled separately by `git.file_diff.show_full_file`, which is enabled by default.
 
+Setting `gutter.line_staging_checkboxes` puts a checkbox on every changed line
+in the gutter. Checking one stages that line on its own; unchecking gives back
+the whole hunk it belongs to, since unstaging a single line is the reverse
+operation and is not offered. The git gutter widens to make room for them, so
+it is off by default.
+
 ### Word Diff Highlighting
 
 By default, Zed highlights changed words within modified lines to make it easier to spot exactly what changed. To disable this globally, open the Settings Editor and go to **Languages & Tools > Miscellaneous**, then turn off **Word Diff Enabled**.
@@ -184,6 +190,16 @@ Zed has two primary staging workflows, using either the Project Diff or the pane
 In the Project Diff view, you can focus on each hunk and stage them individually by clicking on the tab bar buttons or via the keybindings {#action git::StageAndNext} ({#kb git::StageAndNext}).
 
 Similarly, stage all hunks at the same time with the {#action git::StageAll} ({#kb git::StageAll}) keybinding and then immediately commit with {#action git::Commit} ({#kb git::Commit}).
+
+### Staging Part of a Hunk
+
+A hunk is often larger than the change you want to commit. Select the lines you
+care about and use {#action git::StageSelectedLines} ({#kb git::StageSelectedLines})
+to stage only those, leaving the rest of the hunk unstaged — the same thing
+`git add -p` is for, without leaving the editor.
+
+The selection can span several hunks, and lines outside a hunk are ignored, so
+selecting a whole region and staging it does the expected thing.
 
 ### Using the Git Panel
 

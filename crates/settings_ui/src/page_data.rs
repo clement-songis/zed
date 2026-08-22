@@ -2184,7 +2184,7 @@ fn editor_page() -> SettingsPage {
         ]
     }
 
-    fn gutter_section() -> [SettingsPageItem; 10] {
+    fn gutter_section() -> [SettingsPageItem; 11] {
         [
             SettingsPageItem::SectionHeader("Gutter"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -2244,6 +2244,30 @@ fn editor_page() -> SettingsPage {
                             .gutter
                             .get_or_insert_default()
                             .runnables = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Line Staging Checkboxes",
+                description: "Show a checkbox on each changed line in the gutter, staging that line on its own. Widens the git gutter to make room for it.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("gutter.line_staging_checkboxes"),
+                    pick: |settings_content| {
+                        settings_content
+                            .editor
+                            .gutter
+                            .as_ref()
+                            .and_then(|gutter| gutter.line_staging_checkboxes.as_ref())
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .editor
+                            .gutter
+                            .get_or_insert_default()
+                            .line_staging_checkboxes = value;
                     },
                 }),
                 metadata: None,

@@ -520,6 +520,13 @@ pub struct GutterContent {
     ///
     /// Default: true
     pub runnables: Option<bool>,
+    /// Whether to show a checkbox on each changed line in the gutter, staging
+    /// that line on its own.
+    ///
+    /// Widens the git gutter to make room for it.
+    ///
+    /// Default: false
+    pub line_staging_checkboxes: Option<bool>,
     /// Whether to show breakpoints in the gutter.
     ///
     /// Default: true
