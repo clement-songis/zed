@@ -6754,6 +6754,66 @@ impl GitPanel {
         )
     }
 
+    /// Rebases the current branch onto one chosen from a picker.
+    ///
+    /// Shares the picker and outcome handling with merging: a rebase that stops
+    /// on conflicts hands over to the sequencer banner rather than reporting an
+    /// error.
+    fn rebase_branch(&mut self, _: &git::Rebase, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo) = self.active_repository.clone() else {
+            return;
+        };
+        let workspace = self.workspace.clone();
+        let current = repo
+            .read(cx)
+            .branch
+            .as_ref()
+            .map(|branch| branch.name().to_string());
+
+        cx.spawn_in(window, async move |this, cx| {
+            let scan = repo.update(cx, |repo, _| repo.branches()).await??;
+            let names: Vec<SharedString> = scan
+                .branches
+                .iter()
+                .map(|branch| SharedString::from(branch.name().to_string()))
+                .filter(|name| Some(name.as_ref()) != current.as_deref())
+                .collect();
+            anyhow::ensure!(!names.is_empty(), "No other branch to rebase onto");
+
+            let prompt = match current.as_deref() {
+                Some(current) => format!("Pick a branch to rebase {current} onto"),
+                None => "Pick a branch to rebase onto".to_string(),
+            };
+            let Some(selection) = cx
+                .update(|window, cx| {
+                    picker_prompt::prompt(&prompt, names.clone(), workspace, window, cx)
+                })?
+                .await
+            else {
+                return Ok(());
+            };
+            let branch = names.get(selection).context("branch disappeared")?.clone();
+
+            let outcome = repo
+                .update(cx, |repo, _| repo.rebase(branch.to_string(), None))
+                .await?;
+
+            this.update(cx, |this, cx| match outcome {
+                Ok(MergeOutcome::Merged) => {
+                    this.show_info_toast(format!("Rebased onto {branch}"), cx);
+                }
+                Ok(MergeOutcome::Conflicted) => {
+                    this.show_info_toast(
+                        format!("Rebasing onto {branch} stopped on conflicts"),
+                        cx,
+                    );
+                }
+                Err(error) => this.show_error_toast("rebase", error, cx),
+            })
+        })
+        .detach_and_log_err(cx);
+    }
+
     /// Merges a branch chosen from a picker into the current one.
     ///
     /// A merge that stops on conflicts is reported as such rather than as an
@@ -8927,6 +8987,7 @@ impl Render for GitPanel {
                     .on_action(cx.listener(Self::generate_commit_message_action))
                     .on_action(cx.listener(Self::commit_message_history))
                     .on_action(cx.listener(Self::merge_branch))
+                    .on_action(cx.listener(Self::rebase_branch))
                     .on_action(cx.listener(Self::stash_all))
                     .on_action(cx.listener(Self::stash_tracked))
                     .on_action(cx.listener(Self::stash_staged))

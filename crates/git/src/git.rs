@@ -145,6 +145,8 @@ actions!(
         FocusTagMessage,
         /// Merges another branch into the current one.
         Merge,
+        /// Rebases the current branch onto another one.
+        Rebase,
     ]
 );
 

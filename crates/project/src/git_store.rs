@@ -944,6 +944,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_sequencer_abort);
         client.add_entity_request_handler(Self::handle_sequencer_advance);
         client.add_entity_request_handler(Self::handle_merge);
+        client.add_entity_request_handler(Self::handle_rebase);
         client.add_entity_request_handler(Self::handle_rename_branch);
         client.add_entity_request_handler(Self::handle_create_remote);
         client.add_entity_request_handler(Self::handle_remove_remote);
@@ -4139,6 +4140,26 @@ impl GitStore {
     async fn handle_checkout_tag(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::GitCheckoutTag>,
+    async fn handle_rebase(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitRebase>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::GitRebaseResponse> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let payload = envelope.payload;
+
+        let outcome = repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.rebase(payload.upstream, payload.onto)
+            })
+            .await??;
+
+        Ok(proto::GitRebaseResponse {
+            conflicted: outcome == MergeOutcome::Conflicted,
+        })
+    }
+
     async fn handle_merge(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::GitMerge>,
@@ -9663,6 +9684,43 @@ impl Repository {
         self.send_job(
             "create_tag",
             Some(status_msg),
+    pub fn rebase(
+        &mut self,
+        upstream: String,
+        onto: Option<String>,
+    ) -> oneshot::Receiver<Result<MergeOutcome>> {
+        let id = self.id;
+        self.send_job(
+            "rebase",
+            Some(format!("git rebase {upstream}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => backend.rebase(upstream, onto, environment).await,
+                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                        let response = client
+                            .request(proto::GitRebase {
+                                project_id: project_id.0,
+                                repository_id: id.to_proto(),
+                                upstream,
+                                onto,
+                            })
+                            .await?;
+
+                        Ok(if response.conflicted {
+                            MergeOutcome::Conflicted
+                        } else {
+                            MergeOutcome::Merged
+                        })
+                    }
+                }
+            },
+        )
+    }
+
     pub fn merge(
         &mut self,
         branch: String,

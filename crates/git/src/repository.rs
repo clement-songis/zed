@@ -905,6 +905,17 @@ pub trait GitRepository: Send + Sync {
     /// any, so the UI can say why the repository looks the way it does.
     fn sequencer_state(&self) -> BoxFuture<'_, Option<SequencerState>>;
 
+    /// Rebases the current branch onto `upstream`.
+    ///
+    /// `onto` replays only the commits after it, mapping to `--onto`. Like
+    /// merging, stopping on conflicts is an outcome rather than a failure.
+    fn rebase(
+        &self,
+        upstream: String,
+        onto: Option<String>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>>;
+
     /// Merges `branch` into the current branch.
     ///
     /// Returns `Ok(())` when the merge completes and when it stops on
@@ -2492,6 +2503,54 @@ impl GitRepository for RealGitRepository {
     ) -> BoxFuture<'_, Result<()>> {
     fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
     fn checkout_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+    fn rebase(
+        &self,
+        upstream: String,
+        onto: Option<String>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>> {
+        let git_binary = self.git_binary_in_worktree();
+        let git_dir = self.git_dir.clone();
+
+        self.executor
+            .spawn(async move {
+                let git_binary = git_binary?;
+                let mut args = vec!["rebase".to_string()];
+                if let Some(onto) = onto {
+                    args.push("--onto".into());
+                    args.push(onto);
+                }
+                args.push(upstream);
+
+                let output = git_binary
+                    .build_command(&args)
+                    .envs(env.iter())
+                    // A rebase that reaches a `reword` or `edit` step would
+                    // otherwise open an editor and never return.
+                    .env("GIT_EDITOR", "true")
+                    .output()
+                    .await?;
+
+                if output.status.success() {
+                    return anyhow::Ok(MergeOutcome::Merged);
+                }
+
+                // Stopping on a conflict leaves a resolvable state behind, which
+                // the sequencer banner picks up. Detected by the marker rather
+                // than by matching git's message, which is translated.
+                if git_dir.join(REBASE_MERGE_DIR).exists()
+                    || git_dir.join(REBASE_APPLY_DIR).exists()
+                {
+                    return anyhow::Ok(MergeOutcome::Conflicted);
+                }
+
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                anyhow::bail!("Failed to rebase:\n{stderr}{stdout}");
+            })
+            .boxed()
+    }
+
     fn merge(
         &self,
         branch: String,
@@ -5584,6 +5643,96 @@ mod tests {
                 .merge("no-such-branch".to_string(), MergeOptions::default(), env)
                 .await
                 .is_err()
+        );
+    }
+
+    #[gpui::test]
+    async fn test_rebase_replays_and_reports_conflicts(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_directory = temp_dir.path().join("repo");
+        git_init_repo(&repo_directory);
+
+        fs::write(repo_directory.join("shared.txt"), "base\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "base"]);
+
+        // A branch touching a different file rebases cleanly.
+        git_command(&repo_directory, ["switch", "-c", "upstream-branch"]);
+        fs::write(repo_directory.join("upstream.txt"), "upstream\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "upstream work"]);
+
+        git_command(&repo_directory, ["switch", "main"]);
+        git_command(&repo_directory, ["switch", "-c", "feature"]);
+        fs::write(repo_directory.join("feature.txt"), "feature\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "feature work"]);
+
+        let repository = RealGitRepository::new(
+            &repo_directory.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+        let env = Arc::new(test_commit_envs());
+
+        assert_eq!(
+            repository
+                .rebase("upstream-branch".to_string(), None, env.clone())
+                .await
+                .unwrap(),
+            MergeOutcome::Merged
+        );
+        assert_eq!(
+            git_command_output(&repo_directory, ["log", "--format=%s", "-n", "3"]),
+            "feature work\nupstream work\nbase",
+            "the feature commit is replayed on top of the upstream branch"
+        );
+        assert_eq!(
+            repository.sequencer_state().await,
+            None,
+            "a completed rebase leaves nothing in progress"
+        );
+
+        // Now a conflicting one: both branches change the same line.
+        git_command(&repo_directory, ["switch", "-c", "conflicting", "main"]);
+        fs::write(repo_directory.join("shared.txt"), "theirs\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "theirs"]);
+
+        git_command(&repo_directory, ["switch", "-c", "mine", "main"]);
+        fs::write(repo_directory.join("shared.txt"), "mine\n").unwrap();
+        git_command(&repo_directory, ["add", "."]);
+        git_command(&repo_directory, ["commit", "-m", "mine"]);
+
+        assert_eq!(
+            repository
+                .rebase("conflicting".to_string(), None, env.clone())
+                .await
+                .unwrap(),
+            MergeOutcome::Conflicted,
+            "a stopped rebase is a state to resolve, not an error"
+        );
+        assert!(
+            repository.sequencer_state().await.is_some(),
+            "the banner takes over from here"
+        );
+
+        repository
+            .sequencer_abort(SequencerOperation::RebaseInteractive)
+            .await
+            .unwrap();
+
+        assert!(
+            repository
+                .rebase("no-such-branch".to_string(), None, env)
+                .await
+                .is_err(),
+            "an unknown branch is a genuine failure"
         );
     }
 
