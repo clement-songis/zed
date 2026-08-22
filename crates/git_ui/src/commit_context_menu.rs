@@ -1,5 +1,6 @@
 use crate::commit_view::CommitView;
 use git::Oid;
+use git::repository::ResetMode;
 use gpui::{Action, ClipboardItem, Entity, FocusHandle, SharedString, WeakEntity, Window, actions};
 use project::{GIT_COMMAND_TASK_TAG, git_store::Repository};
 
@@ -145,6 +146,30 @@ pub(crate) fn commit_context_menu(
                     }
                 },
             )
+            .submenu("Reset to Here", {
+                let repository = repository.clone();
+                move |menu, _window, _cx| {
+                    let mut menu = menu;
+                    for (label, mode) in [
+                        ("Soft — keep changes staged", ResetMode::Soft),
+                        ("Mixed — keep changes unstaged", ResetMode::Mixed),
+                        ("Keep — refuse if it would overwrite", ResetMode::Keep),
+                        ("Hard — discard changes", ResetMode::Hard),
+                    ] {
+                        let repository = repository.clone();
+                        menu = menu.entry(label, None, move |window, cx| {
+                            crate::reset_to_commit(
+                                SharedString::from(sha.to_string()),
+                                mode,
+                                repository.clone(),
+                                window,
+                                cx,
+                            );
+                        });
+                    }
+                    menu
+                }
+            })
             .entry(
                 "Copy SHA",
                 Some(CopyCommitSha.boxed_clone()),

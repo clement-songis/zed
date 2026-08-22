@@ -695,6 +695,7 @@ pub struct SequencerState {
     pub head_name: Option<SharedString>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResetMode {
     /// Reset the branch pointer, leave index and worktree unchanged (this will make it look like things that were
     /// committed are now staged).
@@ -702,6 +703,12 @@ pub enum ResetMode {
     /// Reset the branch pointer and index, leave worktree unchanged (this makes it look as though things that were
     /// committed are now unstaged).
     Mixed,
+    /// Reset the branch pointer, index and worktree, discarding uncommitted
+    /// changes outright. The only mode that destroys work.
+    Hard,
+    /// Like `Hard`, but refuses rather than discarding when a file differs
+    /// between the two commits and has uncommitted changes.
+    Keep,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -1615,6 +1622,8 @@ impl GitRepository for RealGitRepository {
             let mode_flag = match mode {
                 ResetMode::Mixed => "--mixed",
                 ResetMode::Soft => "--soft",
+                ResetMode::Hard => "--hard",
+                ResetMode::Keep => "--keep",
             };
 
             let output = git
@@ -5779,6 +5788,70 @@ mod tests {
             "feature"
         );
         assert_eq!(
+            #[gpui::test]
+            async fn test_reset_modes_differ_in_what_they_touch(cx: &mut TestAppContext) {
+                disable_git_global_config();
+                cx.executor().allow_parking();
+
+                let temp_dir = tempfile::tempdir().unwrap();
+                let repo_directory = temp_dir.path().join("repo");
+                git_init_repo(&repo_directory);
+
+                fs::write(repo_directory.join("file.txt"), "first\n").unwrap();
+                git_command(&repo_directory, ["add", "."]);
+                git_command(&repo_directory, ["commit", "-m", "first"]);
+                let first_sha = git_command_output(&repo_directory, ["rev-parse", "HEAD"]);
+
+                fs::write(repo_directory.join("file.txt"), "second\n").unwrap();
+                git_command(&repo_directory, ["add", "."]);
+                git_command(&repo_directory, ["commit", "-m", "second"]);
+
+                let repository = RealGitRepository::new(
+                    &repo_directory.join(".git"),
+                    None,
+                    Some("git".into()),
+                    cx.executor(),
+                )
+                .unwrap();
+                let env = Arc::new(test_commit_envs());
+
+                // Soft moves the branch pointer and leaves the file alone.
+                repository
+                    .reset(first_sha.clone(), ResetMode::Soft, env.clone())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    git_command_output(&repo_directory, ["rev-parse", "HEAD"]),
+                    first_sha
+                );
+                assert_eq!(
+                    fs::read_to_string(repo_directory.join("file.txt")).unwrap(),
+                    "second\n",
+                    "a soft reset must not touch the working tree"
+                );
+                assert_eq!(
+                    git_command_output(&repo_directory, ["diff", "--cached", "--name-only"]),
+                    "file.txt",
+                    "the committed change becomes staged"
+                );
+
+                // Hard is the destructive one: it throws the file contents away.
+                git_command(&repo_directory, ["commit", "-m", "second again"]);
+                repository
+                    .reset(first_sha.clone(), ResetMode::Hard, env)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    fs::read_to_string(repo_directory.join("file.txt")).unwrap(),
+                    "first\n",
+                    "a hard reset discards the working tree changes"
+                );
+                assert_eq!(
+                    git_command_output(&repo_directory, ["status", "--porcelain"]),
+                    "",
+                    "nothing is left staged or modified"
+                );
+            },
             git.run(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}",])
                 .await
                 .unwrap(),

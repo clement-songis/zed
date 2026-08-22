@@ -197,6 +197,18 @@ Zed offers two commit textareas:
 {#action git::CommitMessageHistory}, also available as "Reuse Commit Message…" in the commit button's menu, lists the messages of recent commits on the current branch. Picking one puts it in the commit message editor, replacing whatever is there.
 
 Identical messages are listed once, and the list is searchable.
+### Resetting to a Commit
+
+Right-click a commit in the Git Graph or the Git Panel's History tab and use **Reset to Here** to move the current branch to it. The four modes differ in what they touch:
+
+| Mode | Branch | Index | Working tree |
+| --- | --- | --- | --- |
+| Soft | moved | kept | kept — the committed changes appear staged |
+| Mixed | moved | reset | kept — the committed changes appear unstaged |
+| Keep | moved | reset | kept, but refuses if a changed file would be overwritten |
+| Hard | moved | reset | **reset — uncommitted changes are discarded** |
+
+Only Hard destroys work, and Zed says so before proceeding.
 
 ### Undoing a Commit
 

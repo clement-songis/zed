@@ -7,6 +7,7 @@ use workspace::{Toast, notifications::NotificationId};
 mod blame_ui;
 pub mod clone;
 
+use git::repository::ResetMode;
 use git::{
     repository::{Branch, CommitDetails, Upstream, UpstreamTracking, UpstreamTrackingStatus},
     status::{FileStatus, StatusCode, UnmergedStatus, UnmergedStatusCode},
@@ -770,6 +771,13 @@ pub(crate) fn delete_tag(
 /// and how to leave it rather than just asking to proceed.
 pub(crate) fn checkout_tag(
     tag_name: SharedString,
+/// Resets the current branch to `commit`.
+///
+/// Only `Hard` can destroy work, so it is the only mode that spells out what is
+/// lost; the others move the branch pointer and leave the files alone.
+pub(crate) fn reset_to_commit(
+    commit: SharedString,
+    mode: ResetMode,
     repository: Option<WeakEntity<Repository>>,
     window: &mut Window,
     cx: &mut App,
@@ -788,6 +796,23 @@ pub(crate) fn checkout_tag(
              branch. Switch to a branch, or create one from here, to get back.",
         ),
         &["Check Out", "Cancel"],
+    let (label, detail) = match mode {
+        ResetMode::Soft => ("Soft reset", "Committed changes become staged."),
+        ResetMode::Mixed => ("Mixed reset", "Committed changes become unstaged."),
+        ResetMode::Hard => (
+            "Hard reset",
+            "Uncommitted changes will be discarded. This cannot be undone.",
+        ),
+        ResetMode::Keep => (
+            "Keep reset",
+            "Refuses rather than discarding if a changed file would be overwritten.",
+        ),
+    };
+    let prompt = window.prompt(
+        PromptLevel::Warning,
+        &format!("{label} to {commit}?"),
+        Some(detail),
+        &["Reset", "Cancel"],
         cx,
     );
     window
@@ -817,6 +842,17 @@ pub(crate) fn checkout_tag(
                 && let Ok(Err(error)) = checked_out.await
             {
                 log::error!("failed to check out tag: {error:#}");
+            let reset = cx
+                .update(|_, cx| {
+                    repository.update(cx, |repository, cx| {
+                        repository.reset(commit.to_string(), mode, cx)
+                    })
+                })
+                .ok();
+            if let Some(reset) = reset
+                && let Ok(Err(error)) = reset.await
+            {
+                log::error!("failed to reset: {error:#}");
             }
         })
         .detach();
